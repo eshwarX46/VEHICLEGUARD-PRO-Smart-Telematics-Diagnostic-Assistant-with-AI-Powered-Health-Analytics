@@ -1,0 +1,2350 @@
+// ESP32_Node4_Receiver.ino
+// ESP32 - NODE 4 (RECEIVER) - Receives ALL vehicle data via CAN
+// With LCD Display, Rotary Encoder, AI Predictions, WiFi, Web Dashboard, MQTT & Digital Twin
+// PLUS: Transmits processed data to NodeMCU via CAN for Bluetooth
+
+#include <CAN.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WebServer.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// ============================================================
+//                    WiFi & MQTT CONFIGURATION
+// ============================================================
+const char* ssid = "Redbull";           // Change this
+const char* password = "eshwar46";   // Change this
+
+// MQTT Broker Settings
+const char* mqtt_server = "broker.emqx.io";    // Free public MQTT broker
+const int mqtt_port = 1883;
+const char* mqtt_topic = "vehicle/data";
+const char* mqtt_alert_topic = "vehicle/alerts";
+
+// Web Server Port
+#define WEB_SERVER_PORT 80
+
+// ============================================================
+//                    PIN DEFINITIONS
+// ============================================================
+#define TX_GPIO_NUM   21
+#define RX_GPIO_NUM   22
+
+// I2C Pins for LCD
+#define I2C_SDA 33
+#define I2C_SCL 32
+
+// Encoder Pins
+#define ENC_CLK 2
+#define ENC_DT 4
+#define ENC_SW 5
+
+// Buzzer Pin
+#define BUZZER_PIN 12
+
+// LCD Address
+#define LCD_ADDRESS 0x27
+#define LCD_COLS 16
+#define LCD_ROWS 2
+
+// ============================================================
+//                    CAN TRANSMIT CONFIGURATION
+// ============================================================
+#define NODE_ID 2  // ESP32 receiver node ID
+unsigned long lastCANTransmit = 0;
+unsigned long canTransmitInterval = 1000; // Send to NodeMCU every 1 second
+
+// ============================================================
+//                    WiFi & MQTT OBJECTS
+// ============================================================
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+WebServer server(WEB_SERVER_PORT);
+
+// WiFi Status
+bool wifiConnected = false;
+bool mqttConnected = false;
+unsigned long lastMQTTReconnect = 0;
+unsigned long lastCloudUpload = 0;
+unsigned long lastWebUpdate = 0;
+
+// ============================================================
+//                    AI PREDICTION VARIABLES
+// ============================================================
+struct AIData {
+    float engineHealth = 100.0;
+    float batteryHealth = 100.0;
+    float brakeHealth = 100.0;
+    float oilHealth = 100.0;
+    float overallHealth = 100.0;
+    bool anomalyDetected = false;
+    String alertMessage = "";
+    int alertLevel = 0; // 0=OK, 1=Warning, 2=Critical
+    bool alertActive = false;
+    unsigned long alertStartTime = 0;
+    bool buzzerActive = false;
+} aiData;
+
+// Historical Data Storage
+#define HISTORY_SIZE 100
+struct HistoricalData {
+    float engineHealth[100];
+    float batteryHealth[100];
+    float brakeHealth[100];
+    float oilHealth[100];
+    float overallHealth[100];
+    float rpm[100];
+    float speed[100];
+    float coolantTemp[100];
+    unsigned long timestamp[100];
+    int index = 0;
+    int count = 0;
+} history;
+
+// ============================================================
+//                    LCD & ENCODER VARIABLES
+// ============================================================
+LiquidCrystal_I2C lcd(LCD_ADDRESS, LCD_COLS, LCD_ROWS);
+
+int encoderPos = 0;
+int lastEncoderPos = 0;
+int lastEncCLK = LOW;
+bool encoderButtonPressed = false;
+bool lastEncoderButton = HIGH;
+unsigned long lastEncoderButtonTime = 0;
+
+// LCD Pages
+#define TOTAL_PAGES 13
+int currentPage = 0;
+
+// ============================================================
+//                    CAN VARIABLES
+// ============================================================
+int receiveCount = 0;
+unsigned long lastHeartbeat = 0;
+unsigned long lastPrintTime = 0;
+unsigned long lastLCDUpdate = 0;
+unsigned long lastAlertTime = 0;
+unsigned long lastHistoryUpdate = 0;
+bool canStatus = false;
+
+// ============================================================
+//                    RECEIVED VEHICLE DATA STRUCTURE
+// ============================================================
+struct ReceivedVehicleData {
+    // Engine
+    float rpm = 0.0;
+    float speed = 0.0;
+    float engineLoad = 0.0;
+    int gear = 0;
+    
+    // Temperatures
+    float coolantTemp = 0.0;
+    float oilTemp = 0.0;
+    float exhaustTemp = 0.0;
+    float catTemp = 0.0;
+    
+    // Performance
+    float torque = 0.0;
+    float horsepower = 0.0;
+    float engineHealth = 0.0;
+    float engineHours = 0.0;
+    
+    // Controls
+    int throttlePct = 0;
+    int brakePct = 0;
+    int steeringDeg = 0;
+    float ignitionTiming = 0.0;
+    float fuelInjectorPulse = 0.0;
+    
+    // Brakes
+    float brakePadWear = 0.0;
+    float brakeDiscWear = 0.0;
+    float brakeTemp = 0.0;
+    float brakePressure = 0.0;
+    float brakeFluidLevel = 0.0;
+    
+    // Tyres
+    float tyrePressureFL = 0.0;
+    float tyrePressureFR = 0.0;
+    float tyrePressureRL = 0.0;
+    float tyrePressureRR = 0.0;
+    float tyreTempFL = 0.0;
+    float tyreTempFR = 0.0;
+    float tyreTempRL = 0.0;
+    float tyreTempRR = 0.0;
+    float tyreWearFL = 0.0;
+    float tyreWearFR = 0.0;
+    float tyreWearRL = 0.0;
+    float tyreWearRR = 0.0;
+    float tyreGripFL = 0.0;
+    float tyreGripFR = 0.0;
+    float tyreGripRL = 0.0;
+    float tyreGripRR = 0.0;
+    
+    // Electrical
+    float batteryVoltage = 0.0;
+    float alternatorVoltage = 0.0;
+    float batterySOC = 0.0;
+    float batteryHealth = 0.0;
+    float currentDraw = 0.0;
+    float alternatorLoad = 0.0;
+    
+    // Fuel
+    float fuelLevel = 0.0;
+    float fuelConsumption = 0.0;
+    float fuelPressure = 0.0;
+    float distance = 0.0;
+    float maxSpeed = 0.0;
+    
+    // Fluids
+    float oilLevel = 0.0;
+    float oilQuality = 0.0;
+    float oilPressure = 0.0;
+    float coolantLevel = 0.0;
+    float washerFluid = 0.0;
+    float powerSteeringFluid = 0.0;
+    
+    // Diagnostics
+    bool checkEngineLight = false;
+    bool tpmsWarning = false;
+    bool serviceRequired = false;
+    bool absWarning = false;
+    bool brakeWarning = false;
+    bool oilWarning = false;
+    bool coolantWarning = false;
+    bool batteryWarning = false;
+    bool tractionControlActive = false;
+    bool espActive = false;
+    bool engineRunning = false;
+    bool headlightOn = false;
+    bool hornOn = false;
+    bool wiperOn = false;
+    
+    // MPU6050
+    int16_t ax = 0;
+    int16_t ay = 0;
+    int16_t az = 0;
+    int16_t gx = 0;
+    int16_t gy = 0;
+    int16_t gz = 0;
+    
+    // GPS
+    double latitude = 0.0;
+    double longitude = 0.0;
+    float altitude = 0.0;
+    int satellites = 0;
+    float avgSpeed = 0.0;
+    float tripDistance = 0.0;
+    float tripTime = 0.0;
+    
+    // Status
+    int modeIndex = 0;
+    int pressCount = 0;
+    float driveShaftSpeed = 0.0;
+    float clutchWear = 0.0;
+    float transmissionHealth = 0.0;
+    bool acOn = false;
+    bool heaterOn = false;
+    float cabinTemp = 0.0;
+    float fanSpeed = 0.0;
+    
+    // Timestamps
+    unsigned long lastUpdate = 0;
+    int nodeId = 0;
+    int messageCount = 0;
+} vehicle;
+
+// ============================================================
+//                    SETUP
+// ============================================================
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    
+    Serial.println("========================================");
+    Serial.println("ESP32 - NODE 2 (RECEIVER)");
+    Serial.println("WITH LCD, AI, WiFi, MQTT, WEB & DIGITAL TWIN");
+    Serial.println("CAN TRANSMIT TO NODEMCU ENABLED");
+    Serial.println("========================================");
+    
+    // ---- Initialize Buzzer ----
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    
+    // ---- Initialize LCD ----
+    Wire.begin(I2C_SDA, I2C_SCL);
+    lcd.init();
+    lcd.backlight();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("CAN Receiver");
+    lcd.setCursor(0, 1);
+    lcd.print("Node 2 - AI Ready");
+    delay(2000);
+    lcd.clear();
+    
+    // ---- Initialize Encoder ----
+    pinMode(ENC_CLK, INPUT_PULLUP);
+    pinMode(ENC_DT, INPUT_PULLUP);
+    pinMode(ENC_SW, INPUT_PULLUP);
+    
+    // ---- Initialize WiFi ----
+    lcd.setCursor(0, 0);
+    lcd.print("Connecting WiFi");
+    lcd.setCursor(0, 1);
+    lcd.print("Please wait...");
+    
+    WiFi.begin(ssid, password);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnected = true;
+        Serial.println("\n✅ WiFi Connected!");
+        Serial.print("IP Address: ");
+        Serial.println(WiFi.localIP());
+        
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi Connected!");
+        lcd.setCursor(0, 1);
+        lcd.print(WiFi.localIP().toString());
+        delay(2000);
+    } else {
+        Serial.println("\n❌ WiFi Connection Failed!");
+        wifiConnected = false;
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi Failed!");
+        lcd.setCursor(0, 1);
+        lcd.print("Check Credentials");
+        delay(2000);
+    }
+    
+    // ---- Initialize MQTT ----
+    if (wifiConnected) {
+        mqttClient.setServer(mqtt_server, mqtt_port);
+        mqttClient.setCallback(mqttCallback);
+        connectMQTT();
+    }
+    
+    // ---- Initialize Web Server with Digital Twin ----
+    if (wifiConnected) {
+        setupWebServer();
+        server.begin();
+        Serial.println("✅ Web Server Started!");
+        Serial.print("Web Dashboard: http://");
+        Serial.println(WiFi.localIP());
+        Serial.print("Digital Twin: http://");
+        Serial.print(WiFi.localIP());
+        Serial.println("/twin");
+    }
+    
+    // ---- Initialize CAN (Receiver) ----
+    CAN.setPins(RX_GPIO_NUM, TX_GPIO_NUM);
+    
+    if (!CAN.begin(250E3)) {
+        Serial.println("❌ Starting CAN failed!");
+        canStatus = false;
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("CAN Failed!");
+        while (1);
+    }
+    
+    Serial.println("✅ CAN Ready at 250KBPS!");
+    canStatus = true;
+    
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("CAN Connected!");
+    lcd.setCursor(0, 1);
+    lcd.print("AI Monitoring ON");
+    delay(1000);
+    lcd.clear();
+    
+    Serial.println("Waiting for data...\n");
+    Serial.println("AI Predictions Engine: READY");
+    Serial.println("Web Dashboard: READY");
+    Serial.println("Digital Twin: READY");
+    Serial.println("MQTT: READY");
+    Serial.println("CAN Transmit to NodeMCU: ENABLED");
+    Serial.println("========================================\n");
+}
+
+// ============================================================
+//                    MAIN LOOP
+// ============================================================
+void loop() {
+    // Read encoder
+    readEncoder();
+    
+    // Receive CAN data
+    canReceiver();
+    
+    // Send heartbeat every 3 seconds
+    static unsigned long lastSend = 0;
+    if (millis() - lastSend > 3000) {
+        sendHeartbeat();
+        lastSend = millis();
+    }
+    
+    // Run AI Predictions every 2 seconds
+    if (millis() - lastAlertTime > 2000) {
+        runAIPredictions();
+        lastAlertTime = millis();
+    }
+    
+    // Store historical data every 5 seconds
+    if (millis() - lastHistoryUpdate > 5000) {
+        storeHistoricalData();
+        lastHistoryUpdate = millis();
+    }
+    
+    // Update buzzer
+    updateBuzzer();
+    
+    // ---- TRANSMIT PROCESSED DATA TO NODEMCU VIA CAN ----
+    if (millis() - lastCANTransmit > canTransmitInterval) {
+        transmitToNodeMCU();
+        lastCANTransmit = millis();
+    }
+    
+    // MQTT reconnect if needed
+    if (wifiConnected && !mqttClient.connected()) {
+        connectMQTT();
+    }
+    mqttClient.loop();
+    
+    // Upload to cloud every 10 seconds
+    if (wifiConnected && millis() - lastCloudUpload > 10000) {
+        uploadToCloud();
+        lastCloudUpload = millis();
+    }
+    
+    // Handle web server
+    if (wifiConnected) {
+        server.handleClient();
+    }
+    
+    // Print full vehicle data every 2 seconds (Serial Monitor)
+    if (millis() - lastPrintTime > 2000) {
+        printVehicleData();
+        printAIData();
+        lastPrintTime = millis();
+    }
+    
+    // Update LCD display every 500ms
+    if (millis() - lastLCDUpdate > 500) {
+        updateLCD();
+        lastLCDUpdate = millis();
+    }
+    
+    delay(5);
+}
+
+// ============================================================
+//                    TRANSMIT TO NODEMCU VIA CAN
+// ============================================================
+void transmitToNodeMCU() {
+    static int msgCounter = 0;
+    msgCounter++;
+    
+    // ---- Send Engine Data (ID: 0x101) ----
+    CAN.beginPacket(0x101);
+    CAN.write(NODE_ID);                    // From Node 2 (ESP32)
+    CAN.write(msgCounter & 0xFF);          // Message counter
+    CAN.write((int)(vehicle.rpm) >> 8);    // RPM High byte
+    CAN.write((int)(vehicle.rpm) & 0xFF);  // RPM Low byte
+    CAN.write((int)(vehicle.speed));       // Speed
+    CAN.write((int)(vehicle.engineLoad * 100)); // Engine Load
+    CAN.write(vehicle.gear);               // Gear
+    CAN.endPacket();
+    
+    // ---- Send Temperatures (ID: 0x102) ----
+    CAN.beginPacket(0x102);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(vehicle.coolantTemp));
+    CAN.write((int)(vehicle.oilTemp));
+    CAN.write((int)(vehicle.exhaustTemp) >> 8);
+    CAN.write((int)(vehicle.exhaustTemp) & 0xFF);
+    CAN.write((int)(vehicle.catTemp) >> 8);
+    CAN.write((int)(vehicle.catTemp) & 0xFF);
+    CAN.endPacket();
+    
+    // ---- Send Performance (ID: 0x103) ----
+    CAN.beginPacket(0x103);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(vehicle.torque) >> 8);
+    CAN.write((int)(vehicle.torque) & 0xFF);
+    CAN.write((int)(vehicle.horsepower) >> 8);
+    CAN.write((int)(vehicle.horsepower) & 0xFF);
+    CAN.write((int)(vehicle.engineHealth));
+    CAN.endPacket();
+    
+    // ---- Send Controls (ID: 0x104) ----
+    CAN.beginPacket(0x104);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write(vehicle.throttlePct);
+    CAN.write(vehicle.brakePct);
+    CAN.write(vehicle.steeringDeg + 90);
+    CAN.write((int)(vehicle.ignitionTiming * 10));
+    CAN.write((int)(vehicle.fuelInjectorPulse));
+    CAN.endPacket();
+    
+    // ---- Send Electrical (ID: 0x109) ----
+    CAN.beginPacket(0x109);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(vehicle.batteryVoltage * 10));
+    CAN.write((int)(vehicle.alternatorVoltage * 10));
+    CAN.write((int)(vehicle.batterySOC));
+    CAN.write((int)(vehicle.batteryHealth));
+    CAN.endPacket();
+    
+    // ---- Send Fuel (ID: 0x10A) ----
+    CAN.beginPacket(0x10A);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(vehicle.fuelLevel * 10));
+    CAN.write((int)(vehicle.fuelConsumption * 10));
+    CAN.write((int)(vehicle.fuelPressure * 10));
+    CAN.write((int)(vehicle.distance * 10));
+    CAN.write((int)(vehicle.maxSpeed));
+    CAN.endPacket();
+    
+    // ---- Send Tyre Pressures (ID: 0x106) ----
+    CAN.beginPacket(0x106);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(vehicle.tyrePressureFL * 10));
+    CAN.write((int)(vehicle.tyrePressureFR * 10));
+    CAN.write((int)(vehicle.tyrePressureRL * 10));
+    CAN.write((int)(vehicle.tyrePressureRR * 10));
+    CAN.endPacket();
+    
+    // ---- Send Diagnostics (ID: 0x10C) ----
+    CAN.beginPacket(0x10C);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    byte diagFlags = 0;
+    if (vehicle.checkEngineLight) diagFlags |= 0x01;
+    if (vehicle.tpmsWarning) diagFlags |= 0x02;
+    if (vehicle.serviceRequired) diagFlags |= 0x04;
+    if (vehicle.absWarning) diagFlags |= 0x08;
+    if (vehicle.brakeWarning) diagFlags |= 0x10;
+    if (vehicle.oilWarning) diagFlags |= 0x20;
+    if (vehicle.coolantWarning) diagFlags |= 0x40;
+    if (vehicle.batteryWarning) diagFlags |= 0x80;
+    
+    byte diagFlags2 = 0;
+    if (vehicle.tractionControlActive) diagFlags2 |= 0x01;
+    if (vehicle.espActive) diagFlags2 |= 0x02;
+    if (vehicle.engineRunning) diagFlags2 |= 0x04;
+    if (vehicle.headlightOn) diagFlags2 |= 0x08;
+    if (vehicle.hornOn) diagFlags2 |= 0x10;
+    if (vehicle.wiperOn) diagFlags2 |= 0x20;
+    
+    CAN.write(diagFlags);
+    CAN.write(diagFlags2);
+    CAN.endPacket();
+    
+    // ---- Send Mode/Status (ID: 0x111) ----
+    CAN.beginPacket(0x111);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write(vehicle.modeIndex);
+    CAN.write(vehicle.pressCount);
+    CAN.write(vehicle.gear);
+    CAN.write((int)(vehicle.driveShaftSpeed));
+    CAN.write((int)(vehicle.engineHours));
+    CAN.endPacket();
+    
+    // ---- Send AI Health Data (ID: 0x115) ----
+    CAN.beginPacket(0x115);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write((int)(aiData.engineHealth));
+    CAN.write((int)(aiData.batteryHealth));
+    CAN.write((int)(aiData.brakeHealth));
+    CAN.write((int)(aiData.oilHealth));
+    CAN.write((int)(aiData.overallHealth));
+    CAN.write(aiData.alertLevel);
+    CAN.endPacket();
+    // Add these to transmitToNodeMCU() function:
+
+// ---- Send Brake Data (ID: 0x105) ----
+CAN.beginPacket(0x105);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.brakePadWear));
+CAN.write((int)(vehicle.brakeDiscWear));
+CAN.write((int)(vehicle.brakeTemp));
+CAN.write((int)(vehicle.brakePressure));
+CAN.write((int)(vehicle.brakeFluidLevel));
+CAN.endPacket();
+
+// ---- Send Tyre Temps (ID: 0x107) ----
+CAN.beginPacket(0x107);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.tyreTempFL));
+CAN.write((int)(vehicle.tyreTempFR));
+CAN.write((int)(vehicle.tyreTempRL));
+CAN.write((int)(vehicle.tyreTempRR));
+CAN.endPacket();
+
+// ---- Send Tyre Wear (ID: 0x108) ----
+CAN.beginPacket(0x108);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.tyreWearFL));
+CAN.write((int)(vehicle.tyreWearFR));
+CAN.write((int)(vehicle.tyreWearRL));
+CAN.write((int)(vehicle.tyreWearRR));
+CAN.endPacket();
+
+// ---- Send Fluids (ID: 0x10B) ----
+CAN.beginPacket(0x10B);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.oilLevel));
+CAN.write((int)(vehicle.oilQuality));
+CAN.write((int)(vehicle.oilPressure));
+CAN.write((int)(vehicle.coolantLevel));
+CAN.write((int)(vehicle.washerFluid));
+CAN.endPacket();
+
+// ---- Send MPU6050 Accel (ID: 0x10D) ----
+CAN.beginPacket(0x10D);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write(vehicle.ax >> 8);
+CAN.write(vehicle.ax & 0xFF);
+CAN.write(vehicle.ay >> 8);
+CAN.write(vehicle.ay & 0xFF);
+CAN.write(vehicle.az >> 8);
+CAN.write(vehicle.az & 0xFF);
+CAN.endPacket();
+
+// ---- Send MPU6050 Gyro (ID: 0x10E) ----
+CAN.beginPacket(0x10E);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write(vehicle.gx >> 8);
+CAN.write(vehicle.gx & 0xFF);
+CAN.write(vehicle.gy >> 8);
+CAN.write(vehicle.gy & 0xFF);
+CAN.write(vehicle.gz >> 8);
+CAN.write(vehicle.gz & 0xFF);
+CAN.endPacket();
+
+// ---- Send GPS (ID: 0x10F) ----
+int32_t lat = vehicle.latitude * 1000000;
+int32_t lng = vehicle.longitude * 1000000;
+CAN.beginPacket(0x10F);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((lat >> 24) & 0xFF);
+CAN.write((lat >> 16) & 0xFF);
+CAN.write((lat >> 8) & 0xFF);
+CAN.write(lat & 0xFF);
+CAN.write((lng >> 24) & 0xFF);
+CAN.write((lng >> 16) & 0xFF);
+CAN.endPacket();
+
+// ---- Send GPS Altitude (ID: 0x110) ----
+CAN.beginPacket(0x110);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.altitude * 10));
+CAN.write(vehicle.satellites);
+CAN.write((int)(vehicle.avgSpeed * 10));
+CAN.write((int)(vehicle.tripDistance * 10));
+CAN.write((int)(vehicle.tripTime * 100));
+CAN.endPacket();
+
+// ---- Send Clutch/Transmission (ID: 0x112) ----
+CAN.beginPacket(0x112);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write((int)(vehicle.clutchWear));
+CAN.write((int)(vehicle.transmissionHealth));
+CAN.endPacket();
+
+// ---- Send Cabin Controls (ID: 0x113) ----
+CAN.beginPacket(0x113);
+CAN.write(NODE_ID);
+CAN.write(msgCounter & 0xFF);
+CAN.write(vehicle.acOn ? 1 : 0);
+CAN.write(vehicle.heaterOn ? 1 : 0);
+CAN.write((int)(vehicle.cabinTemp));
+CAN.write((int)(vehicle.fanSpeed * 10));
+CAN.endPacket();
+    
+    // ---- Send Alert Data (ID: 0x116) ----
+    CAN.beginPacket(0x116);
+    CAN.write(NODE_ID);
+    CAN.write(msgCounter & 0xFF);
+    CAN.write(aiData.anomalyDetected ? 1 : 0);
+    // Send alert message (max 6 chars)
+    String msg = aiData.alertMessage.substring(0, 6);
+    for (int i = 0; i < 6; i++) {
+        if (i < msg.length()) {
+            CAN.write(msg.charAt(i));
+        } else {
+            CAN.write(' ');
+        }
+    }
+    CAN.endPacket();
+}
+
+// ============================================================
+//                    ENCODER FUNCTIONS (UNCHANGED)
+// ============================================================
+void readEncoder() {
+    int clkState = digitalRead(ENC_CLK);
+    
+    if (clkState != lastEncCLK) {
+        if (digitalRead(ENC_DT) != clkState) {
+            if (currentPage < TOTAL_PAGES - 1) {
+                currentPage++;
+                encoderPos++;
+                Serial.print("🔘 Page: ");
+                Serial.println(currentPage + 1);
+                lcd.clear();
+            }
+        } else {
+            if (currentPage > 0) {
+                currentPage--;
+                encoderPos--;
+                Serial.print("🔘 Page: ");
+                Serial.println(currentPage + 1);
+                lcd.clear();
+            }
+        }
+        lastEncCLK = clkState;
+    }
+    
+    bool buttonState = digitalRead(ENC_SW);
+    if (buttonState == LOW && lastEncoderButton == HIGH) {
+        if (millis() - lastEncoderButtonTime > 300) {
+            encoderButtonPressed = true;
+            lastEncoderButtonTime = millis();
+            Serial.println("🔘 Encoder Button Pressed!");
+            
+            if (currentPage != 0) {
+                currentPage = 0;
+                encoderPos = 0;
+                lcd.clear();
+                Serial.println("🔘 Returning to Page 1");
+            } else {
+                static bool backlightOn = true;
+                backlightOn = !backlightOn;
+                if (backlightOn) {
+                    lcd.backlight();
+                } else {
+                    lcd.noBacklight();
+                }
+            }
+        }
+    }
+    lastEncoderButton = buttonState;
+}
+
+// ============================================================
+//                    WiFi & MQTT FUNCTIONS (UNCHANGED)
+// ============================================================
+void connectMQTT() {
+    if (!wifiConnected) return;
+    
+    Serial.print("Connecting to MQTT...");
+    if (mqttClient.connect("ESP32_Node2", "", "")) {
+        mqttConnected = true;
+        Serial.println(" ✅ Connected!");
+        mqttClient.subscribe("vehicle/commands");
+        lcd.setCursor(0, 1);
+        lcd.print("MQTT Connected ");
+    } else {
+        mqttConnected = false;
+        Serial.println(" ❌ Failed!");
+    }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    String message;
+    for (int i = 0; i < length; i++) {
+        message += (char)payload[i];
+    }
+    
+    Serial.print("📨 MQTT Command: ");
+    Serial.print(topic);
+    Serial.print(" -> ");
+    Serial.println(message);
+    
+    if (String(topic) == "vehicle/commands") {
+        if (message == "STATUS") {
+            uploadToCloud();
+        } else if (message == "HEALTH") {
+            sendAIHealthMQTT();
+        }
+    }
+}
+
+void sendAIHealthMQTT() {
+    DynamicJsonDocument doc(512);
+    doc["engineHealth"] = aiData.engineHealth;
+    doc["batteryHealth"] = aiData.batteryHealth;
+    doc["brakeHealth"] = aiData.brakeHealth;
+    doc["oilHealth"] = aiData.oilHealth;
+    doc["overallHealth"] = aiData.overallHealth;
+    doc["anomalyDetected"] = aiData.anomalyDetected;
+    doc["alertLevel"] = aiData.alertLevel;
+    doc["alertMessage"] = aiData.alertMessage;
+    
+    String output;
+    serializeJson(doc, output);
+    mqttClient.publish("vehicle/health", output.c_str());
+}
+
+void uploadToCloud() {
+    if (!wifiConnected || !mqttConnected) return;
+    
+    DynamicJsonDocument doc(1024);
+    
+    doc["rpm"] = vehicle.rpm;
+    doc["speed"] = vehicle.speed;
+    doc["gear"] = vehicle.gear;
+    doc["engineLoad"] = vehicle.engineLoad;
+    doc["coolantTemp"] = vehicle.coolantTemp;
+    doc["oilTemp"] = vehicle.oilTemp;
+    doc["horsepower"] = vehicle.horsepower;
+    doc["torque"] = vehicle.torque;
+    doc["throttle"] = vehicle.throttlePct;
+    doc["brake"] = vehicle.brakePct;
+    doc["steering"] = vehicle.steeringDeg;
+    doc["tyrePressureFL"] = vehicle.tyrePressureFL;
+    doc["tyrePressureFR"] = vehicle.tyrePressureFR;
+    doc["tyrePressureRL"] = vehicle.tyrePressureRL;
+    doc["tyrePressureRR"] = vehicle.tyrePressureRR;
+    doc["batteryVoltage"] = vehicle.batteryVoltage;
+    doc["batterySOC"] = vehicle.batterySOC;
+    doc["alternatorVoltage"] = vehicle.alternatorVoltage;
+    doc["fuelLevel"] = vehicle.fuelLevel;
+    doc["fuelConsumption"] = vehicle.fuelConsumption;
+    doc["distance"] = vehicle.distance;
+    doc["checkEngine"] = vehicle.checkEngineLight;
+    doc["absWarning"] = vehicle.absWarning;
+    doc["tpmsWarning"] = vehicle.tpmsWarning;
+    doc["engineRunning"] = vehicle.engineRunning;
+    doc["aiEngineHealth"] = aiData.engineHealth;
+    doc["aiBatteryHealth"] = aiData.batteryHealth;
+    doc["aiBrakeHealth"] = aiData.brakeHealth;
+    doc["aiOilHealth"] = aiData.oilHealth;
+    doc["aiOverallHealth"] = aiData.overallHealth;
+    doc["anomalyDetected"] = aiData.anomalyDetected;
+    doc["alertMessage"] = aiData.alertMessage;
+    doc["alertLevel"] = aiData.alertLevel;
+    doc["latitude"] = vehicle.latitude;
+    doc["longitude"] = vehicle.longitude;
+    doc["satellites"] = vehicle.satellites;
+    doc["timestamp"] = millis() / 1000;
+    doc["receiveCount"] = receiveCount;
+    
+    String output;
+    serializeJson(doc, output);
+    
+    if (mqttClient.publish(mqtt_topic, output.c_str())) {
+        Serial.println("📤 Cloud Upload Success!");
+    } else {
+        Serial.println("❌ Cloud Upload Failed!");
+    }
+}
+
+// ============================================================
+//                    WEB SERVER FUNCTIONS (EXISTING + DIGITAL TWIN)
+// ============================================================
+void setupWebServer() {
+    server.on("/", handleRoot);
+    server.on("/api/data", handleAPIData);
+    server.on("/api/health", handleAPIHealth);
+    server.on("/api/history", handleAPIHistory);
+    server.on("/api/status", handleAPIStatus);
+    server.on("/twin", handleDigitalTwin);
+    server.on("/api/twin", handleAPITwin);
+    server.onNotFound(handleNotFound);
+}
+
+// ============================================================
+//                    DIGITAL TWIN - LIVE VEHICLE STATUS PAGE
+// ============================================================
+void handleDigitalTwin() {
+    String html = "<!DOCTYPE html><html>";
+    html += "<head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+    html += "<title>Digital Twin - Live Vehicle</title>";
+    html += "<style>";
+    html += "*{margin:0;padding:0;box-sizing:border-box}";
+    html += "body{font-family:'Segoe UI',Arial;background:#0a0a1a;color:#eee;min-height:100vh;overflow-x:hidden}";
+    html += ".header{background:linear-gradient(135deg,#1a1a3e,#0a0a2e);padding:20px;text-align:center;border-bottom:2px solid #00d4ff}";
+    html += ".header h1{color:#00d4ff;font-size:28px}";
+    html += ".header p{color:#888;font-size:14px}";
+    html += ".dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:15px;padding:20px;max-width:1400px;margin:0 auto}";
+    html += ".card{background:linear-gradient(145deg,#1a1a3e,#12122e);border-radius:15px;padding:18px;border:1px solid #2a2a5e;transition:all 0.3s}";
+    html += ".card:hover{transform:translateY(-3px);box-shadow:0 8px 25px rgba(0,212,255,0.15)}";
+    html += ".card .icon{font-size:32px;display:block;margin-bottom:8px}";
+    html += ".card .title{color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px}";
+    html += ".card .value{font-size:28px;font-weight:bold;color:#00d4ff;margin:5px 0}";
+    html += ".card .sub{color:#666;font-size:13px}";
+    html += ".card .status-badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:bold}";
+    html += ".badge-on{background:#00d4ff22;color:#00d4ff;border:1px solid #00d4ff44}";
+    html += ".badge-off{background:#ff444422;color:#ff4444;border:1px solid #ff444444}";
+    html += ".badge-warn{background:#ffd70022;color:#ffd700;border:1px solid #ffd70044}";
+    html += ".badge-critical{background:#ff000033;color:#ff4444;border:1px solid #ff000044;animation:pulse 1s infinite}";
+    html += "@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}";
+    html += ".gauge{height:6px;background:#222;border-radius:3px;margin:8px 0;overflow:hidden}";
+    html += ".gauge-fill{height:100%;border-radius:3px;transition:width 0.5s}";
+    html += ".grid-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}";
+    html += ".grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}";
+    html += ".grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px}";
+    html += "@media(max-width:768px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr 1fr}}";
+    html += "@media(max-width:480px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}";
+    html += ".tyre-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}";
+    html += ".tyre{background:#0a0a1a;padding:10px;border-radius:8px;text-align:center;border:1px solid #1a1a3e}";
+    html += ".tyre .pos{color:#666;font-size:10px}";
+    html += ".tyre .press{color:#00d4ff;font-size:18px;font-weight:bold}";
+    html += ".tyre .temp{color:#ffd700;font-size:13px}";
+    html += ".alert-banner{background:#ff000022;border:2px solid #ff4444;border-radius:10px;padding:15px;margin:10px 20px;text-align:center;display:none}";
+    html += ".alert-banner.show{display:block}";
+    html += ".alert-banner .msg{color:#ff4444;font-size:18px;font-weight:bold}";
+    html += ".alert-banner .sub{color:#ff8888;font-size:14px}";
+    html += ".refresh-note{text-align:center;color:#444;font-size:12px;padding:10px}";
+    html += "</style>";
+    html += "<script>";
+    html += "async function updateData(){";
+    html += "try{const r=await fetch('/api/twin');const d=await r.json();";
+    html += "document.getElementById('rpm').textContent=d.rpm;";
+    html += "document.getElementById('speed').textContent=d.speed;";
+    html += "document.getElementById('gear').textContent=d.gear;";
+    html += "document.getElementById('load').textContent=(d.engineLoad*100).toFixed(1);";
+    html += "document.getElementById('hp').textContent=d.hp;";
+    html += "document.getElementById('torque').textContent=d.torque;";
+    html += "document.getElementById('coolant').textContent=d.coolantTemp;";
+    html += "document.getElementById('oil').textContent=d.oilTemp;";
+    html += "document.getElementById('exhaust').textContent=d.exhaustTemp;";
+    html += "document.getElementById('cat').textContent=d.catTemp;";
+    html += "document.getElementById('fl').textContent=d.tyrePressureFL;";
+    html += "document.getElementById('fr').textContent=d.tyrePressureFR;";
+    html += "document.getElementById('rl').textContent=d.tyrePressureRL;";
+    html += "document.getElementById('rr').textContent=d.tyrePressureRR;";
+    html += "document.getElementById('tfl').textContent=d.tyreTempFL;";
+    html += "document.getElementById('tfr').textContent=d.tyreTempFR;";
+    html += "document.getElementById('trl').textContent=d.tyreTempRL;";
+    html += "document.getElementById('trr').textContent=d.tyreTempRR;";
+    html += "document.getElementById('batt').textContent=d.batteryVoltage;";
+    html += "document.getElementById('alt').textContent=d.alternatorVoltage;";
+    html += "document.getElementById('soc').textContent=d.batterySOC;";
+    html += "document.getElementById('fuel').textContent=d.fuelLevel;";
+    html += "document.getElementById('cons').textContent=d.fuelConsumption;";
+    html += "document.getElementById('dist').textContent=d.distance;";
+    html += "document.getElementById('aiOverall').textContent=d.aiOverallHealth;";
+    html += "document.getElementById('aiEngine').textContent=d.aiEngineHealth;";
+    html += "document.getElementById('aiBattery').textContent=d.aiBatteryHealth;";
+    html += "document.getElementById('aiBrake').textContent=d.aiBrakeHealth;";
+    html += "document.getElementById('aiOil').textContent=d.aiOilHealth;";
+    html += "document.getElementById('gaugeOverall').style.width=d.aiOverallHealth+'%';";
+    html += "document.getElementById('gaugeEngine').style.width=d.aiEngineHealth+'%';";
+    html += "document.getElementById('gaugeBattery').style.width=d.aiBatteryHealth+'%';";
+    html += "document.getElementById('gaugeBrake').style.width=d.aiBrakeHealth+'%';";
+    html += "document.getElementById('gaugeOil').style.width=d.aiOilHealth+'%';";
+    html += "const running=d.engineRunning;";
+    html += "document.getElementById('engineStatus').textContent=running?'🏁 RUNNING':'⏹ STOPPED';";
+    html += "document.getElementById('engineStatus').className='status-badge '+(running?'badge-on':'badge-off');";
+    html += "const alertDiv=document.getElementById('alertBanner');";
+    html += "if(d.anomalyDetected){alertDiv.className='alert-banner show';";
+    html += "document.getElementById('alertMsg').textContent='🚨 '+d.alertMessage;";
+    html += "document.getElementById('alertLevel').textContent='Level: '+(d.alertLevel==2?'CRITICAL':'WARNING');}";
+    html += "else{alertDiv.className='alert-banner';}";
+    html += "document.getElementById('rxCount').textContent=d.receiveCount;";
+    html += "}catch(e){console.log('Update error')}}";
+    html += "setInterval(updateData,2000);updateData();";
+    html += "</script>";
+    html += "</head><body>";
+    html += "<div class='header'>";
+    html += "<h1>🚗 Digital Twin - Live Vehicle</h1>";
+    html += "<p>Real-time vehicle monitoring and visualization</p>";
+    html += "</div>";
+    html += "<div id='alertBanner' class='alert-banner'>";
+    html += "<div class='msg' id='alertMsg'>🚨 ENGINE OVERHEATING!</div>";
+    html += "<div class='sub' id='alertLevel'>Level: CRITICAL</div>";
+    html += "</div>";
+    html += "<div class='dashboard'>";
+    html += "<div class='card'><span class='icon'>🔥</span>";
+    html += "<div class='title'>Engine</div>";
+    html += "<div class='value' id='rpm'>0</div>";
+    html += "<div class='sub'>RPM</div>";
+    html += "<div class='grid-3'>";
+    html += "<div><span class='title'>Speed</span><div style='font-size:20px;color:#00d4ff' id='speed'>0 <span style='font-size:12px;color:#666'>km/h</span></div></div>";
+    html += "<div><span class='title'>Gear</span><div style='font-size:20px;color:#00d4ff' id='gear'>0</div></div>";
+    html += "<div><span class='title'>Load</span><div style='font-size:20px;color:#ffd700' id='load'>0 <span style='font-size:12px;color:#666'>%</span></div></div>";
+    html += "</div>";
+    html += "<div class='grid-2' style='margin-top:8px'>";
+    html += "<div><span class='title'>HP</span><div style='font-size:18px;color:#00d4ff' id='hp'>0</div></div>";
+    html += "<div><span class='title'>Torque</span><div style='font-size:18px;color:#00d4ff' id='torque'>0 <span style='font-size:12px;color:#666'>Nm</span></div></div>";
+    html += "</div>";
+    html += "<div style='margin-top:8px'><span class='title'>Status</span><span id='engineStatus' class='status-badge badge-off'>⏹ STOPPED</span></div>";
+    html += "</div>";
+    html += "<div class='card'><span class='icon'>🌡️</span>";
+    html += "<div class='title'>Temperatures</div>";
+    html += "<div class='grid-2'>";
+    html += "<div><span class='title'>Coolant</span><div style='font-size:22px;color:#ff6b6b' id='coolant'>0 <span style='font-size:12px;color:#666'>°C</span></div></div>";
+    html += "<div><span class='title'>Oil</span><div style='font-size:22px;color:#ffd93d' id='oil'>0 <span style='font-size:12px;color:#666'>°C</span></div></div>";
+    html += "</div>";
+    html += "<div class='grid-2'>";
+    html += "<div><span class='title'>Exhaust</span><div style='font-size:18px;color:#ff8a5c' id='exhaust'>0 <span style='font-size:12px;color:#666'>°C</span></div></div>";
+    html += "<div><span class='title'>CAT</span><div style='font-size:18px;color:#ff6b6b' id='cat'>0 <span style='font-size:12px;color:#666'>°C</span></div></div>";
+    html += "</div>";
+    html += "<div><span class='title'>Brake Temp</span><div style='font-size:18px;color:#ff6b6b' id='brakeTemp'>0 <span style='font-size:12px;color:#666'>°C</span></div></div>";
+    html += "</div>";
+    html += "<div class='card'><span class='icon'>🏁</span>";
+    html += "<div class='title'>Tyres</div>";
+    html += "<div class='tyre-grid'>";
+    html += "<div class='tyre'><div class='pos'>FL</div><div class='press' id='fl'>0</div><div style='color:#666;font-size:11px'>PSI</div><div style='color:#ffd700;font-size:12px' id='tfl'>0°C</div></div>";
+    html += "<div class='tyre'><div class='pos'>FR</div><div class='press' id='fr'>0</div><div style='color:#666;font-size:11px'>PSI</div><div style='color:#ffd700;font-size:12px' id='tfr'>0°C</div></div>";
+    html += "<div class='tyre'><div class='pos'>RL</div><div class='press' id='rl'>0</div><div style='color:#666;font-size:11px'>PSI</div><div style='color:#ffd700;font-size:12px' id='trl'>0°C</div></div>";
+    html += "<div class='tyre'><div class='pos'>RR</div><div class='press' id='rr'>0</div><div style='color:#666;font-size:11px'>PSI</div><div style='color:#ffd700;font-size:12px' id='trr'>0°C</div></div>";
+    html += "</div>";
+    html += "<div style='margin-top:8px;text-align:center'>";
+    html += "<span class='title'>TPMS: </span><span id='tpmsStatus' style='color:#00d4ff'>✅ OK</span>";
+    html += "</div>";
+    html += "</div>";
+    html += "<div class='card'><span class='icon'>⚡</span>";
+    html += "<div class='title'>Electrical & Fuel</div>";
+    html += "<div class='grid-2'>";
+    html += "<div><span class='title'>Battery</span><div style='font-size:22px;color:#00d4ff' id='batt'>0 <span style='font-size:12px;color:#666'>V</span></div></div>";
+    html += "<div><span class='title'>Alternator</span><div style='font-size:18px;color:#00d4ff' id='alt'>0 <span style='font-size:12px;color:#666'>V</span></div></div>";
+    html += "</div>";
+    html += "<div><span class='title'>Battery SOC</span><div style='font-size:22px;color:#ffd700' id='soc'>0 <span style='font-size:12px;color:#666'>%</span></div></div>";
+    html += "<div class='grid-2' style='margin-top:8px'>";
+    html += "<div><span class='title'>Fuel</span><div style='font-size:18px;color:#00d4ff' id='fuel'>0 <span style='font-size:12px;color:#666'>L</span></div></div>";
+    html += "<div><span class='title'>Consumption</span><div style='font-size:18px;color:#ffd700' id='cons'>0 <span style='font-size:12px;color:#666'>L/100km</span></div></div>";
+    html += "</div>";
+    html += "<div><span class='title'>Distance</span><div style='font-size:18px;color:#00d4ff' id='dist'>0 <span style='font-size:12px;color:#666'>km</span></div></div>";
+    html += "</div>";
+    html += "<div class='card'><span class='icon'>🤖</span>";
+    html += "<div class='title'>AI Health Monitor</div>";
+    html += "<div class='grid-2'>";
+    html += "<div><span class='title'>Overall</span><div style='font-size:28px;color:#00d4ff' id='aiOverall'>0 <span style='font-size:14px;color:#666'>%</span></div></div>";
+    html += "<div style='padding-top:5px'><span class='title'>Status</span><div id='aiStatus' style='font-size:14px;color:#00d4ff'>✅ NORMAL</div></div>";
+    html += "</div>";
+    html += "<div style='margin-top:8px'><span class='title'>Engine Health</span>";
+    html += "<div class='gauge'><div class='gauge-fill' id='gaugeEngine' style='width:100%;background:linear-gradient(90deg,#e94560,#ffd700,#00d4ff)'></div></div>";
+    html += "<span style='font-size:12px;color:#888' id='aiEngine'>100%</span></div>";
+    html += "<div><span class='title'>Battery Health</span>";
+    html += "<div class='gauge'><div class='gauge-fill' id='gaugeBattery' style='width:100%;background:linear-gradient(90deg,#e94560,#ffd700,#00d4ff)'></div></div>";
+    html += "<span style='font-size:12px;color:#888' id='aiBattery'>100%</span></div>";
+    html += "<div><span class='title'>Brake Health</span>";
+    html += "<div class='gauge'><div class='gauge-fill' id='gaugeBrake' style='width:100%;background:linear-gradient(90deg,#e94560,#ffd700,#00d4ff)'></div></div>";
+    html += "<span style='font-size:12px;color:#888' id='aiBrake'>100%</span></div>";
+    html += "<div><span class='title'>Oil Health</span>";
+    html += "<div class='gauge'><div class='gauge-fill' id='gaugeOil' style='width:100%;background:linear-gradient(90deg,#e94560,#ffd700,#00d4ff)'></div></div>";
+    html += "<span style='font-size:12px;color:#888' id='aiOil'>100%</span></div>";
+    html += "<div style='margin-top:8px'><span class='title'>Overall</span>";
+    html += "<div class='gauge'><div class='gauge-fill' id='gaugeOverall' style='width:100%;background:linear-gradient(90deg,#e94560,#ffd700,#00d4ff)'></div></div>";
+    html += "</div>";
+    html += "</div>";
+    html += "<div class='card'><span class='icon'>📊</span>";
+    html += "<div class='title'>System Status</div>";
+    html += "<div class='grid-2'>";
+    html += "<div><span class='title'>CAN</span><div style='font-size:18px;color:#00d4ff' id='canStatus'>✅ CONNECTED</div></div>";
+    html += "<div><span class='title'>Packets</span><div style='font-size:18px;color:#00d4ff' id='rxCount'>0</div></div>";
+    html += "</div>";
+    html += "<div class='grid-2' style='margin-top:8px'>";
+    html += "<div><span class='title'>Diagnostics</span><div id='diagStatus' style='font-size:14px;color:#00d4ff'>✅ All Systems OK</div></div>";
+    html += "<div><span class='title'>Mode</span><div style='font-size:18px;color:#ffd700' id='mode'>AUTO</div></div>";
+    html += "</div>";
+    html += "</div>";
+    html += "</div>";
+    html += "<div class='refresh-note'>🔄 Auto-updates every 2 seconds | Data from CAN Bus</div>";
+    html += "</body></html>";
+    
+    server.send(200, "text/html", html);
+}
+
+// ============================================================
+//                    API FOR DIGITAL TWIN
+// ============================================================
+void handleAPITwin() {
+    DynamicJsonDocument doc(1024);
+    
+    doc["rpm"] = vehicle.rpm;
+    doc["speed"] = vehicle.speed;
+    doc["gear"] = vehicle.gear;
+    doc["engineLoad"] = vehicle.engineLoad;
+    doc["hp"] = vehicle.horsepower;
+    doc["torque"] = vehicle.torque;
+    doc["engineRunning"] = vehicle.engineRunning;
+    doc["coolantTemp"] = vehicle.coolantTemp;
+    doc["oilTemp"] = vehicle.oilTemp;
+    doc["exhaustTemp"] = vehicle.exhaustTemp;
+    doc["catTemp"] = vehicle.catTemp;
+    doc["brakeTemp"] = vehicle.brakeTemp;
+    doc["tyrePressureFL"] = vehicle.tyrePressureFL;
+    doc["tyrePressureFR"] = vehicle.tyrePressureFR;
+    doc["tyrePressureRL"] = vehicle.tyrePressureRL;
+    doc["tyrePressureRR"] = vehicle.tyrePressureRR;
+    doc["tyreTempFL"] = vehicle.tyreTempFL;
+    doc["tyreTempFR"] = vehicle.tyreTempFR;
+    doc["tyreTempRL"] = vehicle.tyreTempRL;
+    doc["tyreTempRR"] = vehicle.tyreTempRR;
+    doc["tpmsWarning"] = vehicle.tpmsWarning;
+    doc["batteryVoltage"] = vehicle.batteryVoltage;
+    doc["alternatorVoltage"] = vehicle.alternatorVoltage;
+    doc["batterySOC"] = vehicle.batterySOC;
+    doc["fuelLevel"] = vehicle.fuelLevel;
+    doc["fuelConsumption"] = vehicle.fuelConsumption;
+    doc["distance"] = vehicle.distance;
+    doc["aiEngineHealth"] = aiData.engineHealth;
+    doc["aiBatteryHealth"] = aiData.batteryHealth;
+    doc["aiBrakeHealth"] = aiData.brakeHealth;
+    doc["aiOilHealth"] = aiData.oilHealth;
+    doc["aiOverallHealth"] = aiData.overallHealth;
+    doc["anomalyDetected"] = aiData.anomalyDetected;
+    doc["alertMessage"] = aiData.alertMessage;
+    doc["alertLevel"] = aiData.alertLevel;
+    doc["canStatus"] = canStatus;
+    doc["receiveCount"] = receiveCount;
+    doc["modeIndex"] = vehicle.modeIndex;
+    doc["checkEngineLight"] = vehicle.checkEngineLight;
+    doc["absWarning"] = vehicle.absWarning;
+    
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+}
+
+// ============================================================
+//                    EXISTING WEB SERVER FUNCTIONS (UNCHANGED)
+// ============================================================
+void handleRoot() {
+    String html = "<!DOCTYPE html><html>";
+    html += "<head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+    html += "<title>Vehicle Dashboard</title>";
+    html += "<style>";
+    html += "body{font-family:Arial;background:#1a1a2e;color:#eee;margin:0;padding:20px}";
+    html += ".container{max-width:1200px;margin:0 auto}";
+    html += ".card{background:#16213e;border-radius:10px;padding:15px;margin:10px;display:inline-block;min-width:200px;border:1px solid #0f3460}";
+    html += ".card.warning{border-color:#e94560}";
+    html += ".card.ok{border-color:#00d2ff}";
+    html += ".value{font-size:24px;font-weight:bold;color:#00d2ff}";
+    html += ".label{font-size:12px;color:#888}";
+    html += ".alert{background:#e94560;padding:10px;border-radius:5px;color:#fff;margin:10px 0}";
+    html += ".grid{display:flex;flex-wrap:wrap}";
+    html += "h1{color:#00d2ff}";
+    html += ".status{display:inline-block;padding:5px 15px;border-radius:20px;margin:5px}";
+    html += ".status.on{background:#00d2ff;color:#000}";
+    html += ".status.off{background:#e94560;color:#fff}";
+    html += ".status.warn{background:#ffd700;color:#000}";
+    html += "table{width:100%;border-collapse:collapse;margin:10px 0}";
+    html += "td,th{padding:8px;border-bottom:1px solid #333;text-align:left}";
+    html += ".health-bar{height:20px;background:#333;border-radius:10px;overflow:hidden}";
+    html += ".health-fill{height:100%;border-radius:10px;transition:width 0.5s}";
+    html += ".refresh{margin:20px 0}";
+    html += ".nav-link{display:inline-block;padding:10px 20px;margin:10px;background:#16213e;border-radius:8px;color:#00d2ff;text-decoration:none;border:1px solid #0f3460}";
+    html += ".nav-link:hover{background:#0f3460}";
+    html += "</style>";
+    html += "<meta http-equiv='refresh' content='5'>";
+    html += "</head><body>";
+    html += "<div class='container'>";
+    html += "<h1>🚗 Vehicle Telemetry Dashboard</h1>";
+    html += "<div style='margin:10px 0'>";
+    html += "<a href='/' class='nav-link'>📊 Dashboard</a>";
+    html += "<a href='/twin' class='nav-link'>🚗 Digital Twin</a>";
+    html += "</div>";
+    
+    html += "<div class='refresh'>";
+    html += "<span class='status " + String(vehicle.engineRunning ? "on" : "off") + "'>Engine: " + String(vehicle.engineRunning ? "RUNNING" : "STOPPED") + "</span>";
+    html += "<span class='status " + String(canStatus ? "on" : "off") + "'>CAN: " + String(canStatus ? "CONNECTED" : "DISCONNECTED") + "</span>";
+    html += "<span class='status " + String(wifiConnected ? "on" : "off") + "'>WiFi: " + String(wifiConnected ? "CONNECTED" : "DISCONNECTED") + "</span>";
+    html += "<span class='status " + String(mqttConnected ? "on" : "off") + "'>MQTT: " + String(mqttConnected ? "CONNECTED" : "DISCONNECTED") + "</span>";
+    if (aiData.anomalyDetected) {
+        html += "<span class='status warn'>⚠️ ALERT: " + String(aiData.alertMessage) + "</span>";
+    }
+    html += "</div>";
+    
+    if (aiData.anomalyDetected) {
+        html += "<div class='alert'>🚨 " + String(aiData.alertMessage) + " (Level: " + String(aiData.alertLevel == 2 ? "CRITICAL" : "WARNING") + ")</div>";
+    }
+    
+    html += "<h2>🔥 Engine</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>RPM</div><div class='value'>" + String(vehicle.rpm, 0) + "</div></div>";
+    html += "<div class='card'><div class='label'>Speed</div><div class='value'>" + String(vehicle.speed, 1) + " km/h</div></div>";
+    html += "<div class='card'><div class='label'>Gear</div><div class='value'>" + String(vehicle.gear) + "</div></div>";
+    html += "<div class='card'><div class='label'>Engine Load</div><div class='value'>" + String(vehicle.engineLoad * 100, 1) + "%</div></div>";
+    html += "<div class='card'><div class='label'>HP</div><div class='value'>" + String(vehicle.horsepower, 1) + "</div></div>";
+    html += "<div class='card'><div class='label'>Torque</div><div class='value'>" + String(vehicle.torque, 1) + " Nm</div></div>";
+    html += "</div>";
+    
+    html += "<h2>🌡️ Temperatures</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Coolant</div><div class='value'>" + String(vehicle.coolantTemp, 1) + "°C</div></div>";
+    html += "<div class='card'><div class='label'>Oil</div><div class='value'>" + String(vehicle.oilTemp, 1) + "°C</div></div>";
+    html += "<div class='card'><div class='label'>Exhaust</div><div class='value'>" + String(vehicle.exhaustTemp, 0) + "°C</div></div>";
+    html += "<div class='card'><div class='label'>CAT</div><div class='value'>" + String(vehicle.catTemp, 0) + "°C</div></div>";
+    html += "</div>";
+    
+    html += "<h2>🏁 Tyres</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>FL Pressure</div><div class='value'>" + String(vehicle.tyrePressureFL, 1) + " PSI</div></div>";
+    html += "<div class='card'><div class='label'>FR Pressure</div><div class='value'>" + String(vehicle.tyrePressureFR, 1) + " PSI</div></div>";
+    html += "<div class='card'><div class='label'>RL Pressure</div><div class='value'>" + String(vehicle.tyrePressureRL, 1) + " PSI</div></div>";
+    html += "<div class='card'><div class='label'>RR Pressure</div><div class='value'>" + String(vehicle.tyrePressureRR, 1) + " PSI</div></div>";
+    html += "</div>";
+    
+    html += "<h2>⚡ Electrical</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Battery</div><div class='value'>" + String(vehicle.batteryVoltage, 2) + "V</div></div>";
+    html += "<div class='card'><div class='label'>Alternator</div><div class='value'>" + String(vehicle.alternatorVoltage, 2) + "V</div></div>";
+    html += "<div class='card'><div class='label'>Battery SOC</div><div class='value'>" + String(vehicle.batterySOC, 1) + "%</div></div>";
+    html += "</div>";
+    
+    html += "<h2>⛽ Fuel</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Fuel Level</div><div class='value'>" + String(vehicle.fuelLevel, 1) + "L</div></div>";
+    html += "<div class='card'><div class='label'>Consumption</div><div class='value'>" + String(vehicle.fuelConsumption, 1) + " L/100km</div></div>";
+    html += "<div class='card'><div class='label'>Distance</div><div class='value'>" + String(vehicle.distance, 1) + " km</div></div>";
+    html += "</div>";
+    
+    html += "<h2>🤖 AI Health</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Overall Health</div><div class='value'>" + String(aiData.overallHealth, 1) + "%</div></div>";
+    html += "<div class='card'><div class='label'>Engine Health</div><div class='value'>" + String(aiData.engineHealth, 1) + "%</div></div>";
+    html += "<div class='card'><div class='label'>Battery Health</div><div class='value'>" + String(aiData.batteryHealth, 1) + "%</div></div>";
+    html += "<div class='card'><div class='label'>Brake Health</div><div class='value'>" + String(aiData.brakeHealth, 1) + "%</div></div>";
+    html += "<div class='card'><div class='label'>Oil Health</div><div class='value'>" + String(aiData.oilHealth, 1) + "%</div></div>";
+    html += "</div>";
+    
+    html += "<h2>📊 Health Bars</h2>";
+    html += "<div><label>Overall: " + String(aiData.overallHealth, 1) + "%</label><div class='health-bar'><div class='health-fill' style='width:" + String(aiData.overallHealth) + "%;background:" + String(aiData.overallHealth > 70 ? "#00d2ff" : aiData.overallHealth > 40 ? "#ffd700" : "#e94560") + "'></div></div></div>";
+    
+    html += "<h2>🔧 Diagnostics</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Check Engine</div><div class='value'>" + String(vehicle.checkEngineLight ? "⚠️ ON" : "✅ OK") + "</div></div>";
+    html += "<div class='card'><div class='label'>ABS</div><div class='value'>" + String(vehicle.absWarning ? "⚠️ WARN" : "✅ OK") + "</div></div>";
+    html += "<div class='card'><div class='label'>TPMS</div><div class='value'>" + String(vehicle.tpmsWarning ? "⚠️ WARN" : "✅ OK") + "</div></div>";
+    html += "<div class='card'><div class='label'>Service</div><div class='value'>" + String(vehicle.serviceRequired ? "⚠️ REQ" : "✅ OK") + "</div></div>";
+    html += "</div>";
+    
+    html += "<h2>📍 GPS</h2><div class='grid'>";
+    html += "<div class='card'><div class='label'>Latitude</div><div class='value'>" + String(vehicle.latitude, 6) + "</div></div>";
+    html += "<div class='card'><div class='label'>Longitude</div><div class='value'>" + String(vehicle.longitude, 6) + "</div></div>";
+    html += "<div class='card'><div class='label'>Satellites</div><div class='value'>" + String(vehicle.satellites) + "</div></div>";
+    html += "</div>";
+    
+    html += "<h2>📡 CAN Status</h2>";
+    html += "<table>";
+    html += "<tr><th>Packets Received</th><td>" + String(receiveCount) + "</td></tr>";
+    html += "<tr><th>Last Update</th><td>" + String((millis() - vehicle.lastUpdate) / 1000) + "s ago</td></tr>";
+    html += "<tr><th>Node ID</th><td>" + String(vehicle.nodeId) + "</td></tr>";
+    html += "</table>";
+    
+    html += "<p style='color:#888;font-size:12px;margin-top:20px;'>Last updated: " + String(millis() / 1000) + "s | Auto-refresh every 5s</p>";
+    html += "</div></body></html>";
+    
+    server.send(200, "text/html", html);
+}
+
+void handleAPIData() {
+    DynamicJsonDocument doc(1024);
+    
+    doc["rpm"] = vehicle.rpm;
+    doc["speed"] = vehicle.speed;
+    doc["gear"] = vehicle.gear;
+    doc["engineLoad"] = vehicle.engineLoad;
+    doc["coolantTemp"] = vehicle.coolantTemp;
+    doc["oilTemp"] = vehicle.oilTemp;
+    doc["horsepower"] = vehicle.horsepower;
+    doc["torque"] = vehicle.torque;
+    doc["throttle"] = vehicle.throttlePct;
+    doc["brake"] = vehicle.brakePct;
+    doc["steering"] = vehicle.steeringDeg;
+    doc["batteryVoltage"] = vehicle.batteryVoltage;
+    doc["batterySOC"] = vehicle.batterySOC;
+    doc["fuelLevel"] = vehicle.fuelLevel;
+    doc["fuelConsumption"] = vehicle.fuelConsumption;
+    doc["distance"] = vehicle.distance;
+    doc["tyrePressureFL"] = vehicle.tyrePressureFL;
+    doc["tyrePressureFR"] = vehicle.tyrePressureFR;
+    doc["tyrePressureRL"] = vehicle.tyrePressureRL;
+    doc["tyrePressureRR"] = vehicle.tyrePressureRR;
+    doc["engineRunning"] = vehicle.engineRunning;
+    doc["receiveCount"] = receiveCount;
+    
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+}
+
+void handleAPIHealth() {
+    DynamicJsonDocument doc(512);
+    
+    doc["engineHealth"] = aiData.engineHealth;
+    doc["batteryHealth"] = aiData.batteryHealth;
+    doc["brakeHealth"] = aiData.brakeHealth;
+    doc["oilHealth"] = aiData.oilHealth;
+    doc["overallHealth"] = aiData.overallHealth;
+    doc["anomalyDetected"] = aiData.anomalyDetected;
+    doc["alertLevel"] = aiData.alertLevel;
+    doc["alertMessage"] = aiData.alertMessage;
+    
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+}
+
+void handleAPIHistory() {
+    DynamicJsonDocument doc(2048);
+    JsonArray historyArray = doc.createNestedArray("history");
+    
+    int start = max(0, history.count - 20);
+    for (int i = start; i < history.count; i++) {
+        JsonObject item = historyArray.createNestedObject();
+        item["overallHealth"] = history.overallHealth[i];
+        item["engineHealth"] = history.engineHealth[i];
+        item["rpm"] = history.rpm[i];
+        item["speed"] = history.speed[i];
+        item["coolantTemp"] = history.coolantTemp[i];
+    }
+    doc["count"] = history.count;
+    
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+}
+
+void handleAPIStatus() {
+    DynamicJsonDocument doc(256);
+    doc["wifi"] = wifiConnected;
+    doc["mqtt"] = mqttConnected;
+    doc["can"] = canStatus;
+    doc["receiveCount"] = receiveCount;
+    doc["uptime"] = millis() / 1000;
+    doc["ip"] = WiFi.localIP().toString();
+    
+    String output;
+    serializeJson(doc, output);
+    server.send(200, "application/json", output);
+}
+
+void handleNotFound() {
+    server.send(404, "text/html", "<h1>404 Not Found</h1>");
+}
+
+// ============================================================
+//                    CAN RECEIVER (UNCHANGED)
+// ============================================================
+void canReceiver() {
+    int packetSize = CAN.parsePacket();
+    
+    if (packetSize) {
+        receiveCount++;
+        
+        byte data[8];
+        int i = 0;
+        while (CAN.available() && i < 8) {
+            data[i++] = CAN.read();
+        }
+        
+        Serial.print("📥 #");
+        Serial.print(receiveCount);
+        Serial.print(" | ID:0x");
+        Serial.print(CAN.packetId(), HEX);
+        
+        if (i >= 3) {
+            Serial.print(" | From:");
+            Serial.print(data[0]);
+            Serial.print(" | Msg#:");
+            Serial.print(data[1]);
+            Serial.print(" | Time:");
+            Serial.print(data[2]);
+            
+            if (i > 3) {
+                Serial.print(" | HEX:");
+                for(int j=3; j<i; j++) {
+                    if (data[j] < 0x10) Serial.print("0");
+                    Serial.print(data[j], HEX);
+                    Serial.print(" ");
+                }
+            }
+        }
+        Serial.println();
+        
+        processCANData(CAN.packetId(), data, i);
+    }
+}
+
+// ============================================================
+//                    PROCESS CAN DATA (UNCHANGED)
+// ============================================================
+void processCANData(uint32_t packetId, byte data[], int len) {
+    if (len < 3) return;
+    
+    vehicle.nodeId = data[0];
+    vehicle.messageCount = data[1];
+    vehicle.lastUpdate = millis();
+    
+    switch(packetId) {
+        case 0x101: {
+            vehicle.rpm = (data[3] << 8) | data[4];
+            vehicle.speed = data[5];
+            vehicle.engineLoad = data[6] / 100.0;
+            vehicle.gear = data[7];
+            break;
+        }
+            
+        case 0x102: {
+            vehicle.coolantTemp = data[3];
+            vehicle.oilTemp = data[4];
+            vehicle.exhaustTemp = (data[5] << 8) | data[6];
+            vehicle.catTemp = (data[7] << 8) | data[8];
+            break;
+        }
+            
+        case 0x103: {
+            vehicle.torque = (data[3] << 8) | data[4];
+            vehicle.horsepower = (data[5] << 8) | data[6];
+            vehicle.engineHealth = data[7];
+            vehicle.engineHours = data[8] / 10.0;
+            break;
+        }
+            
+        case 0x104: {
+            vehicle.throttlePct = data[3];
+            vehicle.brakePct = data[4];
+            vehicle.steeringDeg = data[5] - 90;
+            vehicle.ignitionTiming = data[6] / 10.0;
+            vehicle.fuelInjectorPulse = data[7];
+            break;
+        }
+            
+        case 0x105: {
+            vehicle.brakePadWear = data[3];
+            vehicle.brakeDiscWear = data[4];
+            vehicle.brakeTemp = data[5];
+            vehicle.brakePressure = data[6];
+            vehicle.brakeFluidLevel = data[7];
+            break;
+        }
+            
+        case 0x106: {
+            vehicle.tyrePressureFL = data[3] / 10.0;
+            vehicle.tyrePressureFR = data[4] / 10.0;
+            vehicle.tyrePressureRL = data[5] / 10.0;
+            vehicle.tyrePressureRR = data[6] / 10.0;
+            break;
+        }
+            
+        case 0x107: {
+            vehicle.tyreTempFL = data[3];
+            vehicle.tyreTempFR = data[4];
+            vehicle.tyreTempRL = data[5];
+            vehicle.tyreTempRR = data[6];
+            break;
+        }
+            
+        case 0x108: {
+            vehicle.tyreWearFL = data[3];
+            vehicle.tyreWearFR = data[4];
+            vehicle.tyreWearRL = data[5];
+            vehicle.tyreWearRR = data[6];
+            break;
+        }
+            
+        case 0x109: {
+            vehicle.batteryVoltage = data[3] / 10.0;
+            vehicle.alternatorVoltage = data[4] / 10.0;
+            vehicle.batterySOC = data[5];
+            vehicle.batteryHealth = data[6];
+            vehicle.currentDraw = data[7] * 10.0;
+            break;
+        }
+            
+        case 0x10A: {
+            vehicle.fuelLevel = data[3] / 10.0;
+            vehicle.fuelConsumption = data[4] / 10.0;
+            vehicle.fuelPressure = data[5] / 10.0;
+            vehicle.distance = data[6] / 10.0;
+            vehicle.maxSpeed = data[7];
+            break;
+        }
+            
+        case 0x10B: {
+            vehicle.oilLevel = data[3];
+            vehicle.oilQuality = data[4];
+            vehicle.oilPressure = data[5];
+            vehicle.coolantLevel = data[6];
+            vehicle.washerFluid = data[7];
+            break;
+        }
+            
+        case 0x10C: {
+            byte diagFlags = data[3];
+            byte diagFlags2 = data[4];
+            
+            vehicle.checkEngineLight = (diagFlags & 0x01) ? true : false;
+            vehicle.tpmsWarning = (diagFlags & 0x02) ? true : false;
+            vehicle.serviceRequired = (diagFlags & 0x04) ? true : false;
+            vehicle.absWarning = (diagFlags & 0x08) ? true : false;
+            vehicle.brakeWarning = (diagFlags & 0x10) ? true : false;
+            vehicle.oilWarning = (diagFlags & 0x20) ? true : false;
+            vehicle.coolantWarning = (diagFlags & 0x40) ? true : false;
+            vehicle.batteryWarning = (diagFlags & 0x80) ? true : false;
+            
+            vehicle.tractionControlActive = (diagFlags2 & 0x01) ? true : false;
+            vehicle.espActive = (diagFlags2 & 0x02) ? true : false;
+            vehicle.engineRunning = (diagFlags2 & 0x04) ? true : false;
+            vehicle.headlightOn = (diagFlags2 & 0x08) ? true : false;
+            vehicle.hornOn = (diagFlags2 & 0x10) ? true : false;
+            vehicle.wiperOn = (diagFlags2 & 0x20) ? true : false;
+            break;
+        }
+            
+        case 0x10D: {
+            vehicle.ax = (data[3] << 8) | data[4];
+            vehicle.ay = (data[5] << 8) | data[6];
+            vehicle.az = (data[7] << 8) | data[8];
+            break;
+        }
+            
+        case 0x10E: {
+            vehicle.gx = (data[3] << 8) | data[4];
+            vehicle.gy = (data[5] << 8) | data[6];
+            vehicle.gz = (data[7] << 8) | data[8];
+            break;
+        }
+            
+        case 0x10F: {
+            int32_t lat = ((uint32_t)data[3] << 24) | ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 8) | data[6];
+            int32_t lng = ((uint32_t)data[7] << 24) | ((uint32_t)data[8] << 16);
+            vehicle.latitude = lat / 1000000.0;
+            vehicle.longitude = lng / 1000000.0;
+            break;
+        }
+            
+        case 0x110: {
+            vehicle.altitude = data[3] / 10.0;
+            vehicle.satellites = data[4];
+            vehicle.avgSpeed = data[5] / 10.0;
+            vehicle.tripDistance = data[6] / 10.0;
+            vehicle.tripTime = data[7] / 100.0;
+            break;
+        }
+            
+        case 0x111: {
+            vehicle.modeIndex = data[3];
+            vehicle.pressCount = data[4];
+            vehicle.gear = data[5];
+            vehicle.driveShaftSpeed = data[6];
+            vehicle.engineHours = data[7];
+            break;
+        }
+            
+        case 0x112: {
+            vehicle.clutchWear = data[3];
+            vehicle.transmissionHealth = data[4];
+            break;
+        }
+            
+        case 0x113: {
+            vehicle.acOn = data[3] ? true : false;
+            vehicle.heaterOn = data[4] ? true : false;
+            vehicle.cabinTemp = data[5];
+            vehicle.fanSpeed = data[6] / 10.0;
+            break;
+        }
+            
+        case 0x114: {
+            if (data[3] == 0xAA && data[4] == 0x55) {
+                // Heartbeat received
+            }
+            break;
+        }
+    }
+}
+
+// ============================================================
+//                    SEND HEARTBEAT
+// ============================================================
+void sendHeartbeat() {
+    CAN.beginPacket(0x400);
+    CAN.write(4);
+    CAN.write(99);
+    CAN.write(millis() / 1000);
+    CAN.write('O');
+    CAN.write('K');
+    CAN.endPacket();
+}
+
+// ============================================================
+//                    AI PREDICTIONS ENGINE (UNCHANGED)
+// ============================================================
+void runAIPredictions() {
+    // ---- ENGINE HEALTH PREDICTION ----
+    float engineHealth = 100.0;
+    
+    if (vehicle.rpm > 6000) {
+        engineHealth -= (vehicle.rpm - 6000) * 0.02;
+    }
+    if (vehicle.rpm > 7000) {
+        engineHealth -= (vehicle.rpm - 7000) * 0.05;
+    }
+    
+    if (vehicle.coolantTemp > 105) {
+        engineHealth -= (vehicle.coolantTemp - 105) * 3;
+    }
+    if (vehicle.coolantTemp > 115) {
+        engineHealth -= (vehicle.coolantTemp - 115) * 5;
+    }
+    
+    if (vehicle.speed > 180) {
+        engineHealth -= (vehicle.speed - 180) * 0.5;
+    }
+    
+    if (vehicle.rpm > 4000 && vehicle.speed < 20 && vehicle.speed > 0) {
+        engineHealth -= 5;
+    }
+    
+    if (vehicle.clutchWear < 50) {
+        engineHealth -= (50 - vehicle.clutchWear) * 0.2;
+    }
+    
+    if (vehicle.oilQuality < 50) {
+        engineHealth -= (50 - vehicle.oilQuality) * 0.3;
+    }
+    
+    engineHealth = constrain(engineHealth, 0, 100);
+    aiData.engineHealth = engineHealth;
+    
+    // ---- BATTERY HEALTH PREDICTION ----
+    float batteryHealth = vehicle.batteryHealth;
+    
+    if (vehicle.batteryVoltage < 12.0 && vehicle.batteryVoltage > 0) {
+        batteryHealth -= (12.0 - vehicle.batteryVoltage) * 5;
+    }
+    if (vehicle.batteryVoltage < 11.0) {
+        batteryHealth -= (11.0 - vehicle.batteryVoltage) * 10;
+    }
+    
+    if (vehicle.alternatorVoltage < 13.5 && vehicle.rpm > 1000 && vehicle.alternatorVoltage > 0) {
+        batteryHealth -= 10;
+    }
+    if (vehicle.alternatorVoltage > 15.0) {
+        batteryHealth -= 5;
+    }
+    
+    if (vehicle.rpm > 5000) {
+        batteryHealth -= (vehicle.rpm - 5000) * 0.01;
+    }
+    
+    batteryHealth = constrain(batteryHealth, 0, 100);
+    aiData.batteryHealth = batteryHealth;
+    
+    // ---- BRAKE HEALTH PREDICTION ----
+    float brakeHealth = vehicle.brakePadWear;
+    
+    if (vehicle.brakePct > 80) {
+        brakeHealth -= 0.5;
+    }
+    if (vehicle.brakePct > 95) {
+        brakeHealth -= 1.0;
+    }
+    
+    if (vehicle.brakeFluidLevel < 30 && vehicle.brakeFluidLevel > 0) {
+        brakeHealth -= (30 - vehicle.brakeFluidLevel) * 0.3;
+    }
+    
+    brakeHealth = constrain(brakeHealth, 0, 100);
+    aiData.brakeHealth = brakeHealth;
+    
+    // ---- OIL HEALTH PREDICTION ----
+    float oilHealth = vehicle.oilQuality;
+    
+    if (vehicle.rpm > 4000) {
+        oilHealth -= (vehicle.rpm - 4000) * 0.005;
+    }
+    
+    if (vehicle.coolantTemp > 100) {
+        oilHealth -= (vehicle.coolantTemp - 100) * 0.5;
+    }
+    
+    if (vehicle.oilLevel < 50 && vehicle.oilLevel > 0) {
+        oilHealth -= (50 - vehicle.oilLevel) * 0.5;
+    }
+    
+    oilHealth = constrain(oilHealth, 0, 100);
+    aiData.oilHealth = oilHealth;
+    
+    // ---- OVERALL HEALTH SCORE ----
+    float overallHealth = (engineHealth * 0.40) + 
+                          (batteryHealth * 0.25) + 
+                          (brakeHealth * 0.20) + 
+                          (oilHealth * 0.15);
+    aiData.overallHealth = overallHealth;
+    
+    // ---- ANOMALY DETECTION & ALERT SYSTEM ----
+    aiData.anomalyDetected = false;
+    aiData.alertMessage = "";
+    aiData.alertLevel = 0;
+    aiData.alertActive = false;
+    
+    // Check 1: Engine Overheating
+    if (vehicle.coolantTemp > 115 && vehicle.coolantTemp > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "ENGINE OVERHEATING!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.coolantTemp > 105) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "ENGINE TEMP HIGH";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 2: High RPM
+    else if (vehicle.rpm > 6000) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "HIGH RPM DETECTED!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.rpm > 5000) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "RPM ABOVE NORMAL";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 3: Engine Health Critical
+    else if (engineHealth < 30) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "ENGINE HEALTH CRITICAL!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (engineHealth < 50) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "ENGINE HEALTH LOW";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 4: Battery Health Critical
+    else if (batteryHealth < 30) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "BATTERY HEALTH CRITICAL!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (batteryHealth < 50) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "BATTERY HEALTH LOW";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 5: Brake Pad Wear
+    else if (vehicle.brakePadWear < 20 && vehicle.brakePadWear > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "BRAKE PADS WORN!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.brakePadWear < 40) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "BRAKE PADS WEARING";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 6: Tyre Pressure
+    else if (vehicle.tyrePressureFL < 25 || vehicle.tyrePressureFR < 25 ||
+             vehicle.tyrePressureRL < 25 || vehicle.tyrePressureRR < 25) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "LOW TYRE PRESSURE!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.tyrePressureFL < 28 || vehicle.tyrePressureFR < 28 ||
+             vehicle.tyrePressureRL < 28 || vehicle.tyrePressureRR < 28) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "TYRE PRESSURE LOW";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 7: Oil Quality Critical
+    else if (vehicle.oilQuality < 20 && vehicle.oilQuality > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "OIL QUALITY CRITICAL!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.oilQuality < 40) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "OIL QUALITY LOW";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 8: TPMS Warning
+    else if (vehicle.tpmsWarning) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "TPMS WARNING!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    
+    // Check 9: Check Engine
+    else if (vehicle.checkEngineLight) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "CHECK ENGINE LIGHT!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    
+    // Check 10: Low Battery Voltage
+    else if (vehicle.batteryVoltage < 12.0 && vehicle.batteryVoltage > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "LOW BATTERY VOLTAGE";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    else if (vehicle.batteryVoltage < 11.0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "BATTERY VOLTAGE CRITICAL!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    
+    // Check 11: Gear Mismatch
+    else if (vehicle.speed > 100 && vehicle.rpm < 1500 && vehicle.speed > 0 && vehicle.rpm > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "GEAR MISMATCH DETECTED";
+        aiData.alertLevel = 1;
+        aiData.alertActive = true;
+    }
+    
+    // Check 12: Low Oil Pressure
+    else if (vehicle.oilPressure < 10 && vehicle.oilPressure > 0) {
+        aiData.anomalyDetected = true;
+        aiData.alertMessage = "LOW OIL PRESSURE!";
+        aiData.alertLevel = 2;
+        aiData.alertActive = true;
+    }
+    
+    // ---- Trigger Buzzer for Critical Alerts ----
+    if (aiData.alertLevel == 2 && aiData.alertActive) {
+        aiData.buzzerActive = true;
+        aiData.alertStartTime = millis();
+    } else {
+        aiData.buzzerActive = false;
+    }
+    
+    // ---- Print Alert (with 5 second cooldown) ----
+    static unsigned long lastAlertPrint = 0;
+    if (aiData.anomalyDetected && millis() - lastAlertPrint > 5000) {
+        lastAlertPrint = millis();
+        Serial.println("╔══════════════════════════════════════════════════════════════════╗");
+        Serial.println("║                     🚨 AI ALERT DETECTED!                       ║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        String level = (aiData.alertLevel == 2) ? "⚠️ CRITICAL" : "⚠️ WARNING";
+        Serial.printf("║   Level: %-44s ║\n", level.c_str());
+        Serial.printf("║   Message: %-44s ║\n", aiData.alertMessage.c_str());
+        Serial.printf("║   Overall Health: %5.1f%%                                      ║\n", aiData.overallHealth);
+        Serial.println("╚══════════════════════════════════════════════════════════════════╝");
+        Serial.println();
+    }
+}
+
+// ============================================================
+//                    STORE HISTORICAL DATA
+// ============================================================
+void storeHistoricalData() {
+    history.engineHealth[history.index] = aiData.engineHealth;
+    history.batteryHealth[history.index] = aiData.batteryHealth;
+    history.brakeHealth[history.index] = aiData.brakeHealth;
+    history.oilHealth[history.index] = aiData.oilHealth;
+    history.overallHealth[history.index] = aiData.overallHealth;
+    history.rpm[history.index] = vehicle.rpm;
+    history.speed[history.index] = vehicle.speed;
+    history.coolantTemp[history.index] = vehicle.coolantTemp;
+    history.timestamp[history.index] = millis();
+    
+    history.index = (history.index + 1) % HISTORY_SIZE;
+    if (history.count < HISTORY_SIZE) {
+        history.count++;
+    }
+}
+
+// ============================================================
+//                    UPDATE BUZZER
+// ============================================================
+void updateBuzzer() {
+    if (aiData.buzzerActive) {
+        unsigned long elapsed = millis() - aiData.alertStartTime;
+        int position = elapsed % 400;
+        
+        if (position < 200) {
+            digitalWrite(BUZZER_PIN, HIGH);
+        } else {
+            digitalWrite(BUZZER_PIN, LOW);
+        }
+        
+        if (elapsed > 3000) {
+            aiData.buzzerActive = false;
+            digitalWrite(BUZZER_PIN, LOW);
+        }
+    } else {
+        digitalWrite(BUZZER_PIN, LOW);
+    }
+}
+
+// ============================================================
+//                    LCD DISPLAY UPDATE
+// ============================================================
+void updateLCD() {
+    lcd.setCursor(14, 0);
+    lcd.print("P");
+    lcd.print(currentPage + 1);
+    
+    if (aiData.anomalyDetected) {
+        lcd.setCursor(13, 1);
+        lcd.print("!");
+    } else {
+        lcd.setCursor(13, 1);
+        lcd.print(" ");
+    }
+    
+    switch(currentPage) {
+        case 0: // Engine Data
+            lcd.setCursor(0, 0);
+            lcd.print("RPM:");
+            lcd.print(vehicle.rpm, 0);
+            lcd.print(" Spd:");
+            lcd.print(vehicle.speed, 0);
+            lcd.setCursor(0, 1);
+            lcd.print("G:");
+            lcd.print(vehicle.gear);
+            lcd.print(" Load:");
+            lcd.print(vehicle.engineLoad * 100, 0);
+            lcd.print("%");
+            break;
+            
+        case 1: // Temperatures
+            lcd.setCursor(0, 0);
+            lcd.print("Cool:");
+            lcd.print(vehicle.coolantTemp, 0);
+            lcd.print("C Oil:");
+            lcd.print(vehicle.oilTemp, 0);
+            lcd.print("C");
+            lcd.setCursor(0, 1);
+            lcd.print("Exh:");
+            lcd.print(vehicle.exhaustTemp, 0);
+            lcd.print("C CAT:");
+            lcd.print(vehicle.catTemp, 0);
+            lcd.print("C");
+            break;
+            
+        case 2: // Performance
+            lcd.setCursor(0, 0);
+            lcd.print("HP:");
+            lcd.print(vehicle.horsepower, 0);
+            lcd.print(" Tq:");
+            lcd.print(vehicle.torque, 0);
+            lcd.print("Nm");
+            lcd.setCursor(0, 1);
+            lcd.print("Health:");
+            lcd.print(vehicle.engineHealth, 0);
+            lcd.print("% Hrs:");
+            lcd.print(vehicle.engineHours, 0);
+            break;
+            
+        case 3: // Controls
+            lcd.setCursor(0, 0);
+            lcd.print("Thr:");
+            lcd.print(vehicle.throttlePct);
+            lcd.print("% Brk:");
+            lcd.print(vehicle.brakePct);
+            lcd.print("%");
+            lcd.setCursor(0, 1);
+            lcd.print("Str:");
+            lcd.print(vehicle.steeringDeg);
+            lcd.print(" deg Ign:");
+            lcd.print(vehicle.ignitionTiming, 0);
+            lcd.print("deg");
+            break;
+            
+        case 4: // Tyre Pressures
+            lcd.setCursor(0, 0);
+            lcd.print("FL:");
+            lcd.print(vehicle.tyrePressureFL, 0);
+            lcd.print(" FR:");
+            lcd.print(vehicle.tyrePressureFR, 0);
+            lcd.print("PSI");
+            lcd.setCursor(0, 1);
+            lcd.print("RL:");
+            lcd.print(vehicle.tyrePressureRL, 0);
+            lcd.print(" RR:");
+            lcd.print(vehicle.tyrePressureRR, 0);
+            lcd.print("PSI");
+            break;
+            
+        case 5: // Tyre Temps & Wear
+            lcd.setCursor(0, 0);
+            lcd.print("Temps FL:");
+            lcd.print(vehicle.tyreTempFL, 0);
+            lcd.print(" FR:");
+            lcd.print(vehicle.tyreTempFR, 0);
+            lcd.setCursor(0, 1);
+            lcd.print("Wear:");
+            lcd.print(vehicle.tyreWearFL, 0);
+            lcd.print("%");
+            break;
+            
+        case 6: // Electrical & Fuel
+            lcd.setCursor(0, 0);
+            lcd.print("Bat:");
+            lcd.print(vehicle.batteryVoltage, 1);
+            lcd.print("V SOC:");
+            lcd.print(vehicle.batterySOC, 0);
+            lcd.print("%");
+            lcd.setCursor(0, 1);
+            lcd.print("Fuel:");
+            lcd.print(vehicle.fuelLevel, 0);
+            lcd.print("L Cons:");
+            lcd.print(vehicle.fuelConsumption, 0);
+            lcd.print("L");
+            break;
+            
+        case 7: // Brakes
+            lcd.setCursor(0, 0);
+            lcd.print("Pad:");
+            lcd.print(vehicle.brakePadWear, 0);
+            lcd.print("% Disc:");
+            lcd.print(vehicle.brakeDiscWear, 0);
+            lcd.print("%");
+            lcd.setCursor(0, 1);
+            lcd.print("Temp:");
+            lcd.print(vehicle.brakeTemp, 0);
+            lcd.print("C Press:");
+            lcd.print(vehicle.brakePressure, 0);
+            lcd.print("%");
+            break;
+            
+        case 8: // Diagnostics
+            lcd.setCursor(0, 0);
+            lcd.print("Eng:");
+            lcd.print(vehicle.checkEngineLight ? "ON " : "OK ");
+            lcd.print("ABS:");
+            lcd.print(vehicle.absWarning ? "ON" : "OK");
+            lcd.setCursor(0, 1);
+            lcd.print("TPMS:");
+            lcd.print(vehicle.tpmsWarning ? "WARN" : "OK ");
+            lcd.print("Serv:");
+            lcd.print(vehicle.serviceRequired ? "REQ" : "OK");
+            break;
+            
+        case 9: // Status & GPS
+            lcd.setCursor(0, 0);
+            lcd.print("Eng:");
+            lcd.print(vehicle.engineRunning ? "RUN" : "STOP");
+            lcd.print(" Mode:");
+            switch(vehicle.modeIndex) {
+                case 0: lcd.print("ECO"); break;
+                case 1: lcd.print("COM"); break;
+                case 2: lcd.print("SPT"); break;
+                case 3: lcd.print("SP+"); break;
+                default: lcd.print("--");
+            }
+            lcd.setCursor(0, 1);
+            lcd.print("Sats:");
+            lcd.print(vehicle.satellites);
+            lcd.print(" RX:");
+            lcd.print(receiveCount);
+            break;
+            
+        case 10: // AI Health Dashboard
+            lcd.setCursor(0, 0);
+            lcd.print("AI Health:");
+            lcd.print(aiData.overallHealth, 0);
+            lcd.print("%");
+            lcd.setCursor(0, 1);
+            lcd.print("Eng:");
+            lcd.print(aiData.engineHealth, 0);
+            lcd.print("% Bat:");
+            lcd.print(aiData.batteryHealth, 0);
+            lcd.print("%");
+            break;
+            
+        case 11: // AI Status & Alerts
+            lcd.setCursor(0, 0);
+            if (aiData.anomalyDetected) {
+                lcd.print("ALERT: ");
+                if (aiData.alertLevel == 2) {
+                    lcd.print("CRITICAL");
+                } else {
+                    lcd.print("WARNING");
+                }
+            } else {
+                lcd.print("AI Status: OK");
+            }
+            lcd.setCursor(0, 1);
+            if (aiData.anomalyDetected) {
+                lcd.print(aiData.alertMessage.substring(0, 16));
+            } else {
+                lcd.print("All Systems OK");
+            }
+            break;
+            
+        case 12: // Network Status
+            lcd.setCursor(0, 0);
+            lcd.print("WiFi:");
+            lcd.print(wifiConnected ? "OK" : "NO");
+            lcd.print(" MQTT:");
+            lcd.print(mqttConnected ? "OK" : "NO");
+            lcd.setCursor(0, 1);
+            lcd.print("IP:");
+            if (wifiConnected) {
+                lcd.print(WiFi.localIP().toString().substring(0, 14));
+            } else {
+                lcd.print("Not Connected");
+            }
+            break;
+    }
+}
+
+// ============================================================
+//                    PRINT AI DATA
+// ============================================================
+void printAIData() {
+    Serial.println("\n┌─── 🤖 AI PREDICTIONS ────────────────────────────────────┐");
+    Serial.print("│ Engine Health: "); Serial.print(aiData.engineHealth, 1); Serial.println("%");
+    Serial.print("│ Battery Health: "); Serial.print(aiData.batteryHealth, 1); Serial.println("%");
+    Serial.print("│ Brake Health: "); Serial.print(aiData.brakeHealth, 1); Serial.println("%");
+    Serial.print("│ Oil Health: "); Serial.print(aiData.oilHealth, 1); Serial.println("%");
+    Serial.print("│ Overall Health: "); Serial.print(aiData.overallHealth, 1); Serial.println("%");
+    Serial.print("│ Anomaly Detected: "); Serial.println(aiData.anomalyDetected ? "⚠️ YES" : "✅ NO");
+    if (aiData.anomalyDetected) {
+        Serial.print("│ Alert Level: ");
+        if (aiData.alertLevel == 2) Serial.println("⚠️ CRITICAL");
+        else if (aiData.alertLevel == 1) Serial.println("⚠️ WARNING");
+        else Serial.println("OK");
+        Serial.print("│ Alert Message: "); Serial.println(aiData.alertMessage);
+    }
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    if (history.count > 0) {
+        Serial.println("\n┌─── 📊 HISTORICAL DATA SUMMARY ────────────────────────┐");
+        float avgHealth = 0;
+        for (int i = 0; i < history.count; i++) {
+            avgHealth += history.overallHealth[i];
+        }
+        avgHealth /= history.count;
+        Serial.print("│ Avg Overall Health: "); Serial.print(avgHealth, 1); Serial.println("%");
+        Serial.print("│ Samples Stored: "); Serial.println(history.count);
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+    }
+    
+    // Network Status
+    Serial.println("\n┌─── 🌐 NETWORK STATUS ────────────────────────────────────┐");
+    Serial.print("│ WiFi: "); Serial.println(wifiConnected ? "✅ CONNECTED" : "❌ DISCONNECTED");
+    if (wifiConnected) {
+        Serial.print("│ IP Address: "); Serial.println(WiFi.localIP());
+    }
+    Serial.print("│ MQTT: "); Serial.println(mqttConnected ? "✅ CONNECTED" : "❌ DISCONNECTED");
+    Serial.print("│ Web Server: "); Serial.println(wifiConnected ? "✅ RUNNING" : "❌ STOPPED");
+    if (wifiConnected) {
+        Serial.print("│ Web URL: http://"); Serial.println(WiFi.localIP());
+        Serial.print("│ Digital Twin: http://"); Serial.print(WiFi.localIP()); Serial.println("/twin");
+    }
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+}
+
+// ============================================================
+//                    PRINT COMPLETE VEHICLE DATA (UNCHANGED)
+// ============================================================
+void printVehicleData() {
+    Serial.println("\n╔════════════════════════════════════════════════════════════╗");
+    Serial.println("║              RECEIVED VEHICLE DATA                       ║");
+    Serial.println("╚════════════════════════════════════════════════════════════╝");
+    
+    // ─── ENGINE ───
+    Serial.println("\n┌─── 🔥 ENGINE ─────────────────────────────────────────────┐");
+    Serial.print("│ RPM: "); Serial.print(vehicle.rpm, 0);
+    Serial.print(" rpm | Speed: "); Serial.print(vehicle.speed, 1); Serial.print(" km/h");
+    Serial.print(" | Gear: "); Serial.println(vehicle.gear);
+    Serial.print("│ Load: "); Serial.print(vehicle.engineLoad * 100, 1); Serial.print("%");
+    Serial.print(" | Torque: "); Serial.print(vehicle.torque, 1); Serial.print(" Nm");
+    Serial.print(" | HP: "); Serial.print(vehicle.horsepower, 1); Serial.println(" HP");
+    Serial.print("│ Throttle: "); Serial.print(vehicle.throttlePct, 1); Serial.print("%");
+    Serial.print(" | Brake: "); Serial.print(vehicle.brakePct, 1); Serial.print("%");
+    Serial.print(" | Steering: "); Serial.print(vehicle.steeringDeg); Serial.println("°");
+    Serial.print("│ Ignition: "); Serial.print(vehicle.ignitionTiming, 1); Serial.print("°");
+    Serial.print(" | Injector: "); Serial.print(vehicle.fuelInjectorPulse, 1); Serial.print(" ms");
+    Serial.print(" | Health: "); Serial.print(vehicle.engineHealth, 1); Serial.println("%");
+    Serial.print("│ Hours: "); Serial.print(vehicle.engineHours, 1); Serial.println(" h");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── TEMPERATURES ───
+    Serial.println("\n┌─── 🌡️ TEMPERATURES ──────────────────────────────────────┐");
+    Serial.print("│ Coolant: "); Serial.print(vehicle.coolantTemp, 1); Serial.print("°C");
+    Serial.print(" | Oil: "); Serial.print(vehicle.oilTemp, 1); Serial.print("°C");
+    Serial.print(" | Exhaust: "); Serial.print(vehicle.exhaustTemp, 0); Serial.print("°C");
+    Serial.print(" | CAT: "); Serial.print(vehicle.catTemp, 0); Serial.println("°C");
+    Serial.print("│ Brake: "); Serial.print(vehicle.brakeTemp, 1); Serial.print("°C");
+    Serial.print(" | Brake Pressure: "); Serial.print(vehicle.brakePressure, 1); Serial.println("%");
+    Serial.print("│ Tyres - FL:"); Serial.print(vehicle.tyreTempFL, 1); Serial.print("°C");
+    Serial.print(" FR:"); Serial.print(vehicle.tyreTempFR, 1); Serial.print("°C");
+    Serial.print(" RL:"); Serial.print(vehicle.tyreTempRL, 1); Serial.print("°C");
+    Serial.print(" RR:"); Serial.print(vehicle.tyreTempRR, 1); Serial.println("°C");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── TYRES ───
+    Serial.println("\n┌─── 🏁 TYRES ──────────────────────────────────────────────┐");
+    Serial.print("│ Pressures - FL:"); Serial.print(vehicle.tyrePressureFL, 1); Serial.print(" PSI");
+    Serial.print(" FR:"); Serial.print(vehicle.tyrePressureFR, 1); Serial.print(" PSI");
+    Serial.print(" RL:"); Serial.print(vehicle.tyrePressureRL, 1); Serial.print(" PSI");
+    Serial.print(" RR:"); Serial.print(vehicle.tyrePressureRR, 1); Serial.println(" PSI");
+    Serial.print("│ Wear - FL:"); Serial.print(vehicle.tyreWearFL, 1); Serial.print("%");
+    Serial.print(" FR:"); Serial.print(vehicle.tyreWearFR, 1); Serial.print("%");
+    Serial.print(" RL:"); Serial.print(vehicle.tyreWearRL, 1); Serial.print("%");
+    Serial.print(" RR:"); Serial.print(vehicle.tyreWearRR, 1); Serial.println("%");
+    Serial.print("│ Grip - FL:"); Serial.print(vehicle.tyreGripFL, 1); Serial.print("%");
+    Serial.print(" FR:"); Serial.print(vehicle.tyreGripFR, 1); Serial.print("%");
+    Serial.print(" RL:"); Serial.print(vehicle.tyreGripRL, 1); Serial.print("%");
+    Serial.print(" RR:"); Serial.print(vehicle.tyreGripRR, 1); Serial.println("%");
+    Serial.print("│ TPMS Warning: "); Serial.println(vehicle.tpmsWarning ? "⚠️ ACTIVE" : "✅ OK");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── BRAKES ───
+    Serial.println("\n┌─── 🛑 BRAKES ─────────────────────────────────────────────┐");
+    Serial.print("│ Pad Wear: "); Serial.print(vehicle.brakePadWear, 1); Serial.print("%");
+    Serial.print(" | Disc Wear: "); Serial.print(vehicle.brakeDiscWear, 1); Serial.print("%");
+    Serial.print(" | Fluid: "); Serial.print(vehicle.brakeFluidLevel, 1); Serial.println("%");
+    Serial.print("│ Pressure: "); Serial.print(vehicle.brakePressure, 1); Serial.print("%");
+    Serial.print(" | Temp: "); Serial.print(vehicle.brakeTemp, 1); Serial.print("°C");
+    Serial.print(" | Distance: "); Serial.print(0.0, 1); Serial.println("m");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── ELECTRICAL ───
+    Serial.println("\n┌─── ⚡ ELECTRICAL ─────────────────────────────────────────┐");
+    Serial.print("│ Battery: "); Serial.print(vehicle.batteryVoltage, 2); Serial.print("V");
+    Serial.print(" | Alternator: "); Serial.print(vehicle.alternatorVoltage, 2); Serial.print("V");
+    Serial.print(" | SOC: "); Serial.print(vehicle.batterySOC, 1); Serial.println("%");
+    Serial.print("│ Health: "); Serial.print(vehicle.batteryHealth, 1); Serial.print("%");
+    Serial.print(" | Temp: "); Serial.print(25.0, 1); Serial.print("°C");
+    Serial.print(" | Current: "); Serial.print(vehicle.currentDraw / 1000.0, 1); Serial.println("A");
+    Serial.print("│ Alternator Load: "); Serial.print(0.0, 1); Serial.println("%");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── FUEL ───
+    Serial.println("\n┌─── ⛽ FUEL ───────────────────────────────────────────────┐");
+    Serial.print("│ Level: "); Serial.print(vehicle.fuelLevel, 1); Serial.print("L (");
+    Serial.print((vehicle.fuelLevel / 60.0) * 100, 1); Serial.print("%)");
+    Serial.print(" | Consumption: "); Serial.print(vehicle.fuelConsumption, 1); Serial.println(" L/100km");
+    Serial.print("│ Pressure: "); Serial.print(vehicle.fuelPressure, 1); Serial.print(" bar");
+    Serial.print(" | Temp: "); Serial.print(25.0, 1); Serial.print("°C");
+    Serial.print(" | Distance: "); Serial.print(vehicle.distance, 1); Serial.println(" km");
+    Serial.print("│ Max Speed: "); Serial.print(vehicle.maxSpeed, 1); Serial.print(" km/h");
+    Serial.print(" | Avg Speed: "); Serial.print(vehicle.avgSpeed, 1); Serial.print(" km/h");
+    Serial.print(" | Trip: "); Serial.print(vehicle.tripDistance, 1); Serial.println(" km");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── FLUIDS ───
+    Serial.println("\n┌─── 💧 FLUIDS ─────────────────────────────────────────────┐");
+    Serial.print("│ Oil Level: "); Serial.print(vehicle.oilLevel, 1); Serial.print("%");
+    Serial.print(" | Oil Quality: "); Serial.print(vehicle.oilQuality, 1); Serial.print("%");
+    Serial.print(" | Oil Pressure: "); Serial.print(vehicle.oilPressure, 1); Serial.println(" PSI");
+    Serial.print("│ Coolant Level: "); Serial.print(vehicle.coolantLevel, 1); Serial.print("%");
+    Serial.print(" | Washer Fluid: "); Serial.print(vehicle.washerFluid, 1); Serial.print("%");
+    Serial.print(" | PS Fluid: "); Serial.print(100.0, 1); Serial.println("%");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── DIAGNOSTICS ───
+    Serial.println("\n┌─── 🔧 DIAGNOSTICS ───────────────────────────────────────┐");
+    Serial.print("│ Check Engine: "); Serial.print(vehicle.checkEngineLight ? "⚠️ ON" : "✅ OK");
+    Serial.print(" | Service: "); Serial.print(vehicle.serviceRequired ? "⚠️ REQ" : "✅ OK");
+    Serial.print(" | ABS: "); Serial.println(vehicle.absWarning ? "⚠️ WARN" : "✅ OK");
+    Serial.print("│ Traction Control: "); Serial.print(vehicle.tractionControlActive ? "🔄 ACTIVE" : "✅ OFF");
+    Serial.print(" | ESP: "); Serial.print(vehicle.espActive ? "🔄 ACTIVE" : "✅ OFF");
+    Serial.print(" | Brake Warning: "); Serial.println(vehicle.brakeWarning ? "⚠️ WARN" : "✅ OK");
+    Serial.print("│ Oil Warning: "); Serial.print(vehicle.oilWarning ? "⚠️ WARN" : "✅ OK");
+    Serial.print(" | Coolant Warning: "); Serial.print(vehicle.coolantWarning ? "⚠️ WARN" : "✅ OK");
+    Serial.print(" | Battery Warning: "); Serial.println(vehicle.batteryWarning ? "⚠️ WARN" : "✅ OK");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── GPS ───
+    Serial.println("\n┌─── 📡 GPS ───────────────────────────────────────────────┐");
+    Serial.print("│ Status: "); Serial.println(vehicle.latitude != 0 ? "✅ REAL GPS FIX" : "🔄 SIMULATED");
+    Serial.print("│ Latitude: "); Serial.print(vehicle.latitude, 6);
+    Serial.print(" | Longitude: "); Serial.println(vehicle.longitude, 6);
+    Serial.print("│ Altitude: "); Serial.print(vehicle.altitude, 1); Serial.print("m");
+    Serial.print(" | Satellites: "); Serial.print(vehicle.satellites);
+    if (vehicle.speed > 0.5) {
+        Serial.print(" | Speed: "); Serial.print(vehicle.speed, 1); Serial.print(" km/h");
+        Serial.print(" | Course: "); Serial.print(0.0, 1); Serial.println("°");
+    } else {
+        Serial.println();
+    }
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── CONTROLS & LED STATUS ───
+    Serial.println("\n┌─── 🎮 CONTROLS & LED STATUS ───────────────────────────┐");
+    Serial.print("│ Ignition: "); Serial.print(vehicle.engineRunning ? "🏁 ON" : "⏹ OFF");
+    Serial.print(" | Mode: ");
+    switch(vehicle.modeIndex) {
+        case 0: Serial.print("ECO"); break;
+        case 1: Serial.print("COMFORT"); break;
+        case 2: Serial.print("SPORT"); break;
+        case 3: Serial.print("SPORT+"); break;
+        default: Serial.print("AUTO");
+    }
+    Serial.print(" | Gear: "); Serial.println(vehicle.gear);
+    Serial.println("│");
+    Serial.println("│ ─── POTENTIOMETERS ───");
+    Serial.print("│ Throttle: "); Serial.print(vehicle.throttlePct); Serial.print("%");
+    Serial.print("   | Brake: "); Serial.print(vehicle.brakePct); Serial.print("%");
+    Serial.print("   | Steering: "); Serial.print(vehicle.steeringDeg); Serial.println("°");
+    Serial.println("│");
+    Serial.println("│ ─── LED STATUS ───");
+    Serial.print("│ LED_GREEN (Engine): "); Serial.print(vehicle.engineRunning ? "🟢 ON" : "⚫ OFF");
+    Serial.print("   | LED_WHITE (Check Eng): "); Serial.print(vehicle.checkEngineLight ? "⚪ ON" : "⚫ OFF");
+    Serial.println();
+    Serial.print("│ LED_RED (Brake): "); Serial.print((vehicle.brakePct > 60 || vehicle.brakeWarning) ? "🔴 ON" : "⚫ OFF");
+    Serial.print("   | LED_BLUE (Headlight): "); Serial.print(vehicle.headlightOn ? "🔵 ON" : "⚫ OFF");
+    Serial.println();
+    Serial.println("│");
+    Serial.println("│ ─── VIRTUAL BUTTONS ───");
+    Serial.print("│ Headlight: "); Serial.print(vehicle.headlightOn ? "💡 ON" : "OFF");
+    Serial.print("   | Horn: "); Serial.print(vehicle.hornOn ? "📢 ON" : "OFF");
+    Serial.print("   | Wiper: "); Serial.println(vehicle.wiperOn ? "💧 ON" : "OFF");
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    // ─── CAN STATUS ───
+    Serial.println("\n┌─── 📤 CAN STATUS ────────────────────────────────────────┐");
+    Serial.print("│ Status: "); Serial.print(canStatus ? "✅ CONNECTED" : "❌ DISCONNECTED");
+    Serial.print(" | Sent: "); Serial.print(0);
+    Serial.print(" | Received: "); Serial.println(receiveCount);
+    if (canStatus) {
+        Serial.print("│ Last Send: "); Serial.print((millis() - lastHeartbeat) / 1000); Serial.print("s ago");
+        Serial.print(" | Rate: "); Serial.print(receiveCount / ((millis() / 1000) > 0 ? (millis() / 1000) : 1)); Serial.println(" pkt/s");
+    }
+    Serial.println("└────────────────────────────────────────────────────────────┘");
+    
+    Serial.println("\n════════════════════════════════════════════════════════════\n");
+}
