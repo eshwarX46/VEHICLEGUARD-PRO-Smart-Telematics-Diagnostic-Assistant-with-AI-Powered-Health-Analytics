@@ -5,6 +5,7 @@
 ![Protocol](https://img.shields.io/badge/Communication-CAN%20Bus-orange)
 ![IoT](https://img.shields.io/badge/IoT-MQTT-success)
 ![Status](https://img.shields.io/badge/Project-Completed-brightgreen)
+
 ---
 
 ## 📖 Overview
@@ -15,7 +16,7 @@ The project simulates and monitors more than **50+ vehicle parameters**, predict
 
 ---
 ## 📸 Project Image
-
+<img width="4080" height="3072" alt="image 20" src="https://github.com/user-attachments/assets/29c0f0d0-8cba-416e-8ff3-876fb9de9203" />
 
 
 ---
@@ -288,7 +289,6 @@ Special thanks to
 - Arduino Community
 - ESP32 Community
 - EMQX MQTT
-- MIT App Inventor
 - Open Source Community
 
 ---
