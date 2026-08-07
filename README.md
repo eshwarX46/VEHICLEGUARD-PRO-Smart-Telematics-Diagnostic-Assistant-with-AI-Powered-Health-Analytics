@@ -14,7 +14,11 @@
 The project simulates and monitors more than **50+ vehicle parameters**, predicts component health using AI algorithms, detects anomalies in real time, and displays information across multiple platforms including a Web Dashboard, LCD Display, Mobile Application, and Digital Twin interface.
 
 ---
+## 📸 Project Image
 
+
+
+---
 ## ✨ Features
 
 - 🚘 Real-Time Vehicle Telemetry
@@ -260,7 +264,9 @@ AI Processing ESP32
 | AI Prediction Accuracy | >95% |
 
 ---
-
+##  Demonstration Video
+https://youtu.be/kNf0HxlcYfQ
+---
 # Author
 
 **Eshwar Prasad Y**
