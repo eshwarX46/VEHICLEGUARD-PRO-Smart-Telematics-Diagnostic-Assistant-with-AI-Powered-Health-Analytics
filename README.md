@@ -115,7 +115,6 @@ LCD Display  Web Dashboard  Digital Twin   MQTT Cloud
 - MQTT
 - CAN Protocol
 - JSON
-- MIT App Inventor
 - Digital Twin
 - AI Rule-Based Health Analytics
 
