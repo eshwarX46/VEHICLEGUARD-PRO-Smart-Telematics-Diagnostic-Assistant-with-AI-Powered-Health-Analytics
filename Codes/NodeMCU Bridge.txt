@@ -1,0 +1,777 @@
+// NodeMCU_CAN_BT_Bridge.ino
+// NodeMCU - CAN Receiver + Bluetooth (HC-05) Bridge
+// Receives vehicle data from ESP32 via CAN and forwards to mobile app via Bluetooth
+
+#include <CAN.h>
+#include <SoftwareSerial.h>
+#include <ArduinoJson.h>
+
+// ============================================================
+//                    PIN DEFINITIONS
+// ============================================================
+// ESP8266 SPI pins for MCP2515 (CAN)
+#define CAN_CS D8        // Chip Select pin (GPIO15)
+// SCK  = D5 (GPIO14)
+// MISO = D6 (GPIO12)
+// MOSI = D7 (GPIO13)
+
+// HC-05 Bluetooth Pins
+#define BT_RX D1         // NodeMCU RX (connect to HC-05 TX)
+#define BT_TX D2         // NodeMCU TX (connect to HC-05 RX)
+#define BT_BAUD 9600
+
+// LED Pins
+#define LED_PIN D4       // Built-in LED (avoid conflict with LED_BUILTIN)
+#define LED_ACTIVITY D3  // Activity LED
+
+// ============================================================
+//                    CAN CONFIGURATION
+// ============================================================
+#define CAN_SPEED 250E3  // 250kbps - Match ESP32
+
+// ============================================================
+//                    SOFTWARE SERIAL FOR BLUETOOTH
+// ============================================================
+SoftwareSerial bluetooth(BT_RX, BT_TX);  // HC-05
+
+// ============================================================
+//                    GLOBAL VARIABLES
+// ============================================================
+int receiveCount = 0;
+unsigned long lastReceiveTime = 0;
+unsigned long lastStatusPrint = 0;
+unsigned long lastBTUpdate = 0;
+bool canInitialized = false;
+bool btConnected = false;
+String btBuffer = "";
+
+// Vehicle data structure - matches ESP32 format
+struct VehicleData {
+    // Engine
+    float rpm = 0;
+    float speed = 0;
+    float engineLoad = 0;
+    int gear = 0;
+    
+    // Temperatures
+    float coolantTemp = 0;
+    float oilTemp = 0;
+    float exhaustTemp = 0;
+    float catTemp = 0;
+    
+    // Performance
+    float torque = 0;
+    float horsepower = 0;
+    float engineHealth = 0;
+    
+    // Controls
+    int throttlePct = 0;
+    int brakePct = 0;
+    int steeringDeg = 0;
+    float ignitionTiming = 0;
+    float fuelInjectorPulse = 0;
+    
+    // Brakes
+    float brakePadWear = 0;
+    float brakeDiscWear = 0;
+    float brakeTemp = 0;
+    float brakePressure = 0;
+    float brakeFluidLevel = 0;
+    
+    // Tyres
+    float tyrePressureFL = 0;
+    float tyrePressureFR = 0;
+    float tyrePressureRL = 0;
+    float tyrePressureRR = 0;
+    float tyreTempFL = 0;
+    float tyreTempFR = 0;
+    float tyreTempRL = 0;
+    float tyreTempRR = 0;
+    float tyreWearFL = 0;
+    float tyreWearFR = 0;
+    float tyreWearRL = 0;
+    float tyreWearRR = 0;
+    
+    // Electrical
+    float batteryVoltage = 0;
+    float alternatorVoltage = 0;
+    float batterySOC = 0;
+    float batteryHealth = 0;
+    
+    // Fuel
+    float fuelLevel = 0;
+    float fuelConsumption = 0;
+    float fuelPressure = 0;
+    float distance = 0;
+    float maxSpeed = 0;
+    
+    // Fluids
+    float oilLevel = 0;
+    float oilQuality = 0;
+    float oilPressure = 0;
+    float coolantLevel = 0;
+    float washerFluid = 0;
+    
+    // Diagnostics
+    bool engineRunning = false;
+    bool checkEngineLight = false;
+    bool tpmsWarning = false;
+    bool serviceRequired = false;
+    bool absWarning = false;
+    bool brakeWarning = false;
+    bool oilWarning = false;
+    bool coolantWarning = false;
+    bool batteryWarning = false;
+    bool tractionControlActive = false;
+    bool espActive = false;
+    bool headlightOn = false;
+    bool hornOn = false;
+    bool wiperOn = false;
+    
+    // GPS
+    double latitude = 0;
+    double longitude = 0;
+    float altitude = 0;
+    int satellites = 0;
+    float avgSpeed = 0;
+    float tripDistance = 0;
+    float tripTime = 0;
+    
+    // Status
+    int modeIndex = 0;
+    int pressCount = 0;
+    float driveShaftSpeed = 0;
+    float engineHours = 0;
+    int nodeId = 0;
+    int messageCount = 0;
+    float clutchWear = 0;
+    float transmissionHealth = 0;
+    bool acOn = false;
+    bool heaterOn = false;
+    float cabinTemp = 0;
+    float fanSpeed = 0;
+    
+    // AI Health (from ESP32)
+    float aiEngineHealth = 100;
+    float aiBatteryHealth = 100;
+    float aiBrakeHealth = 100;
+    float aiOilHealth = 100;
+    float aiOverallHealth = 100;
+    bool anomalyDetected = false;
+    String alertMessage = "";
+    int alertLevel = 0;
+    
+    unsigned long lastUpdate = 0;
+} vehicle;
+
+// ============================================================
+//                    SETUP
+// ============================================================
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    
+    Serial.println("========================================");
+    Serial.println("NodeMCU - CAN + Bluetooth Bridge");
+    Serial.println("Vehicle Telemetry Gateway");
+    Serial.println("========================================");
+    
+    // Initialize LEDs
+    pinMode(LED_PIN, OUTPUT);
+    pinMode(LED_ACTIVITY, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_ACTIVITY, LOW);
+    
+    // Boot animation
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(LED_ACTIVITY, HIGH);
+        delay(200);
+        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_ACTIVITY, LOW);
+        delay(200);
+    }
+    
+    // ---- Initialize Bluetooth (HC-05) ----
+    bluetooth.begin(BT_BAUD);
+    Serial.println("✅ HC-05 Bluetooth Initialized");
+    Serial.print("   RX: D1, TX: D2 | Baud: ");
+    Serial.println(BT_BAUD);
+    Serial.println("   Pair with HC-05 (PIN: 1234)");
+    
+    // ---- Initialize CAN ----
+    Serial.print("Initializing CAN at ");
+    Serial.print(CAN_SPEED / 1000);
+    Serial.println(" kbps...");
+    
+    CAN.setPins(CAN_CS);
+    
+    if (!CAN.begin(CAN_SPEED)) {
+        Serial.println("❌ CAN INITIALIZATION FAILED!");
+        Serial.println("");
+        Serial.println("Check wiring:");
+        Serial.println("  - VCC  → 3.3V (NOT 5V!)");
+        Serial.println("  - GND  → GND");
+        Serial.println("  - CS   → D8 (GPIO15)");
+        Serial.println("  - SO   → D6 (GPIO12) MISO");
+        Serial.println("  - SI   → D7 (GPIO13) MOSI");
+        Serial.println("  - SCK  → D5 (GPIO14)");
+        Serial.println("");
+        while (1) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(500);
+            digitalWrite(LED_PIN, LOW);
+            delay(500);
+        }
+    }
+    
+    canInitialized = true;
+    Serial.println("✅ CAN Initialized Successfully!");
+    Serial.println("   Speed: 250 kbps");
+    Serial.println("   CS Pin: D8 (GPIO15)");
+    Serial.println("");
+    Serial.println("Waiting for ESP32 CAN data...");
+    Serial.println("========================================\n");
+}
+
+// ============================================================
+//                    MAIN LOOP
+// ============================================================
+void loop() {
+    if (!canInitialized) {
+        delay(1000);
+        return;
+    }
+    
+    // Process Bluetooth commands from mobile app
+    processBluetoothCommands();
+    
+    // Receive CAN data from ESP32
+    receiveCANData();
+    
+    // Send data to mobile via Bluetooth every 1 second
+    if (millis() - lastBTUpdate > 1000) {
+        sendDataToMobile();
+        lastBTUpdate = millis();
+    }
+    
+    // Print status every 10 seconds
+    if (millis() - lastStatusPrint > 10000) {
+        printStatus();
+        lastStatusPrint = millis();
+    }
+    
+    // LED status
+    if (millis() - lastReceiveTime < 200) {
+        digitalWrite(LED_PIN, HIGH);
+    } else {
+        digitalWrite(LED_PIN, LOW);
+    }
+    
+    delay(5);
+}
+
+// ============================================================
+//                    PROCESS BLUETOOTH COMMANDS
+// ============================================================
+void processBluetoothCommands() {
+    while (bluetooth.available()) {
+        char c = bluetooth.read();
+        
+        if (!btConnected) {
+            btConnected = true;
+            digitalWrite(LED_ACTIVITY, HIGH);
+            Serial.println("📱 Bluetooth Connected!");
+            bluetooth.println("NodeMCU:READY");
+        }
+        
+        if (c == '\n' || c == '\r') {
+            if (btBuffer.length() > 0) {
+                processMobileCommand(btBuffer);
+                btBuffer = "";
+            }
+        } else {
+            btBuffer += c;
+        }
+    }
+}
+
+void processMobileCommand(String command) {
+    command.trim();
+    if (command.length() == 0) return;
+    
+    Serial.print("📱 Mobile Command: ");
+    Serial.println(command);
+    
+    // Simple commands
+    if (command == "STATUS") {
+        sendDataToMobile();
+    } else if (command == "HEALTH") {
+        sendAIHealthToMobile();
+    } else if (command == "DETAILS") {
+        sendDetailedDataToMobile();
+    } else if (command == "ALERT") {
+        sendAlertToMobile();
+    } else if (command == "PING") {
+        bluetooth.println("PONG");
+    } else if (command == "DISCONNECT") {
+        btConnected = false;
+        digitalWrite(LED_ACTIVITY, LOW);
+        Serial.println("📱 Bluetooth Disconnected!");
+    }
+}
+
+// ============================================================
+//                    RECEIVE CAN DATA FROM ESP32
+// ============================================================
+void receiveCANData() {
+    int packetSize = CAN.parsePacket();
+    
+    if (!packetSize) return;
+    
+    receiveCount++;
+    lastReceiveTime = millis();
+    
+    byte data[8];
+    int len = 0;
+    while (CAN.available() && len < 8) {
+        data[len++] = CAN.read();
+    }
+    
+    uint32_t packetId = CAN.packetId();
+    
+    // Process different message IDs from ESP32
+    switch(packetId) {
+        case 0x101: // Engine Data
+            if (len >= 7) {
+                vehicle.rpm = (data[0] << 8) | data[1];
+                vehicle.speed = data[2];
+                vehicle.engineLoad = data[3] / 100.0;
+                vehicle.gear = data[4];
+                vehicle.nodeId = data[5];
+                vehicle.messageCount = data[6];
+                vehicle.lastUpdate = millis();
+            }
+            break;
+            
+        case 0x102: // Temperatures
+            if (len >= 6) {
+                vehicle.coolantTemp = data[0];
+                vehicle.oilTemp = data[1];
+                vehicle.exhaustTemp = (data[2] << 8) | data[3];
+                vehicle.catTemp = (data[4] << 8) | data[5];
+            }
+            break;
+            
+        case 0x103: // Performance
+            if (len >= 5) {
+                vehicle.torque = (data[0] << 8) | data[1];
+                vehicle.horsepower = (data[2] << 8) | data[3];
+                vehicle.engineHealth = data[4];
+            }
+            break;
+            
+        case 0x104: // Controls
+            if (len >= 5) {
+                vehicle.throttlePct = data[0];
+                vehicle.brakePct = data[1];
+                vehicle.steeringDeg = data[2] - 90;
+                vehicle.ignitionTiming = data[3] / 10.0;
+                vehicle.fuelInjectorPulse = data[4];
+            }
+            break;
+            
+        case 0x105: // Brake Data
+            if (len >= 5) {
+                vehicle.brakePadWear = data[0];
+                vehicle.brakeDiscWear = data[1];
+                vehicle.brakeTemp = data[2];
+                vehicle.brakePressure = data[3];
+                vehicle.brakeFluidLevel = data[4];
+            }
+            break;
+            
+        case 0x106: // Tyre Pressures
+            if (len >= 4) {
+                vehicle.tyrePressureFL = data[0] / 10.0;
+                vehicle.tyrePressureFR = data[1] / 10.0;
+                vehicle.tyrePressureRL = data[2] / 10.0;
+                vehicle.tyrePressureRR = data[3] / 10.0;
+            }
+            break;
+            
+        case 0x107: // Tyre Temps
+            if (len >= 4) {
+                vehicle.tyreTempFL = data[0];
+                vehicle.tyreTempFR = data[1];
+                vehicle.tyreTempRL = data[2];
+                vehicle.tyreTempRR = data[3];
+            }
+            break;
+            
+        case 0x108: // Tyre Wear
+            if (len >= 4) {
+                vehicle.tyreWearFL = data[0];
+                vehicle.tyreWearFR = data[1];
+                vehicle.tyreWearRL = data[2];
+                vehicle.tyreWearRR = data[3];
+            }
+            break;
+            
+        case 0x109: // Electrical
+            if (len >= 4) {
+                vehicle.batteryVoltage = data[0] / 10.0;
+                vehicle.alternatorVoltage = data[1] / 10.0;
+                vehicle.batterySOC = data[2];
+                vehicle.batteryHealth = data[3];
+            }
+            break;
+            
+        case 0x10A: // Fuel
+            if (len >= 5) {
+                vehicle.fuelLevel = data[0] / 10.0;
+                vehicle.fuelConsumption = data[1] / 10.0;
+                vehicle.fuelPressure = data[2] / 10.0;
+                vehicle.distance = data[3] / 10.0;
+                vehicle.maxSpeed = data[4];
+            }
+            break;
+            
+        case 0x10B: // Fluids
+            if (len >= 5) {
+                vehicle.oilLevel = data[0];
+                vehicle.oilQuality = data[1];
+                vehicle.oilPressure = data[2];
+                vehicle.coolantLevel = data[3];
+                vehicle.washerFluid = data[4];
+            }
+            break;
+            
+        case 0x10C: // Diagnostics
+            if (len >= 2) {
+                byte diagFlags = data[0];
+                byte diagFlags2 = data[1];
+                
+                vehicle.checkEngineLight = (diagFlags & 0x01) ? true : false;
+                vehicle.tpmsWarning = (diagFlags & 0x02) ? true : false;
+                vehicle.serviceRequired = (diagFlags & 0x04) ? true : false;
+                vehicle.absWarning = (diagFlags & 0x08) ? true : false;
+                vehicle.brakeWarning = (diagFlags & 0x10) ? true : false;
+                vehicle.oilWarning = (diagFlags & 0x20) ? true : false;
+                vehicle.coolantWarning = (diagFlags & 0x40) ? true : false;
+                vehicle.batteryWarning = (diagFlags & 0x80) ? true : false;
+                
+                vehicle.tractionControlActive = (diagFlags2 & 0x01) ? true : false;
+                vehicle.espActive = (diagFlags2 & 0x02) ? true : false;
+                vehicle.engineRunning = (diagFlags2 & 0x04) ? true : false;
+                vehicle.headlightOn = (diagFlags2 & 0x08) ? true : false;
+                vehicle.hornOn = (diagFlags2 & 0x10) ? true : false;
+                vehicle.wiperOn = (diagFlags2 & 0x20) ? true : false;
+            }
+            break;
+            
+        case 0x10F: // GPS
+            if (len >= 8) {
+                int32_t lat = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+                int32_t lng = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | data[7];
+                vehicle.latitude = lat / 1000000.0;
+                vehicle.longitude = lng / 1000000.0;
+            }
+            break;
+            
+        case 0x110: // GPS Altitude
+            if (len >= 5) {
+                vehicle.altitude = data[0] / 10.0;
+                vehicle.satellites = data[1];
+                vehicle.avgSpeed = data[2] / 10.0;
+                vehicle.tripDistance = data[3] / 10.0;
+                vehicle.tripTime = data[4] / 100.0;
+            }
+            break;
+            
+        case 0x111: // Mode/Status
+            if (len >= 5) {
+                vehicle.modeIndex = data[0];
+                vehicle.pressCount = data[1];
+                vehicle.gear = data[2];
+                vehicle.driveShaftSpeed = data[3];
+                vehicle.engineHours = data[4];
+            }
+            break;
+            
+        case 0x112: // Clutch/Transmission
+            if (len >= 2) {
+                vehicle.clutchWear = data[0];
+                vehicle.transmissionHealth = data[1];
+            }
+            break;
+            
+        case 0x113: // Cabin Controls
+            if (len >= 4) {
+                vehicle.acOn = data[0] ? true : false;
+                vehicle.heaterOn = data[1] ? true : false;
+                vehicle.cabinTemp = data[2];
+                vehicle.fanSpeed = data[3] / 10.0;
+            }
+            break;
+            
+        case 0x115: // AI Health Data
+            if (len >= 6) {
+                vehicle.aiEngineHealth = data[0];
+                vehicle.aiBatteryHealth = data[1];
+                vehicle.aiBrakeHealth = data[2];
+                vehicle.aiOilHealth = data[3];
+                vehicle.aiOverallHealth = data[4];
+                vehicle.alertLevel = data[5];
+            }
+            break;
+            
+        case 0x116: // Alert Data
+            if (len >= 1) {
+                vehicle.anomalyDetected = data[0] ? true : false;
+                // Decode alert message (max 6 chars)
+                String msg = "";
+                for (int i = 1; i < len && i < 7; i++) {
+                    if (data[i] != ' ') {
+                        msg += (char)data[i];
+                    }
+                }
+                vehicle.alertMessage = msg;
+            }
+            break;
+    }
+}
+
+// ============================================================
+//                    SEND DATA TO MOBILE VIA BLUETOOTH
+// ============================================================
+void sendDataToMobile() {
+    if (!btConnected) return;
+    
+    StaticJsonDocument<512> doc;
+    
+    // Engine
+    doc["rpm"] = vehicle.rpm;
+    doc["speed"] = vehicle.speed;
+    doc["gear"] = vehicle.gear;
+    doc["engineLoad"] = vehicle.engineLoad;
+    
+    // Temperatures
+    doc["coolant"] = vehicle.coolantTemp;
+    doc["oilTemp"] = vehicle.oilTemp;
+    
+    // Performance
+    doc["hp"] = vehicle.horsepower;
+    doc["torque"] = vehicle.torque;
+    
+    // Controls
+    doc["throttle"] = vehicle.throttlePct;
+    doc["brake"] = vehicle.brakePct;
+    doc["steering"] = vehicle.steeringDeg;
+    
+    // Tyres
+    doc["fl"] = vehicle.tyrePressureFL;
+    doc["fr"] = vehicle.tyrePressureFR;
+    doc["rl"] = vehicle.tyrePressureRL;
+    doc["rr"] = vehicle.tyrePressureRR;
+    
+    // Electrical
+    doc["battery"] = vehicle.batteryVoltage;
+    doc["soc"] = vehicle.batterySOC;
+    
+    // Fuel
+    doc["fuel"] = vehicle.fuelLevel;
+    doc["consumption"] = vehicle.fuelConsumption;
+    doc["distance"] = vehicle.distance;
+    
+    // AI Health
+    doc["health"] = vehicle.aiOverallHealth;
+    doc["aiEngine"] = vehicle.aiEngineHealth;
+    doc["aiBattery"] = vehicle.aiBatteryHealth;
+    doc["aiBrake"] = vehicle.aiBrakeHealth;
+    doc["aiOil"] = vehicle.aiOilHealth;
+    
+    // Status
+    doc["engineRunning"] = vehicle.engineRunning;
+    doc["alert"] = vehicle.anomalyDetected;
+    doc["alertMsg"] = vehicle.alertMessage;
+    doc["alertLevel"] = vehicle.alertLevel;
+    doc["rx"] = receiveCount;
+    
+    String output;
+    serializeJson(doc, output);
+    bluetooth.println("DATA:" + output);
+}
+
+// ============================================================
+//                    SEND AI HEALTH TO MOBILE
+// ============================================================
+void sendAIHealthToMobile() {
+    if (!btConnected) return;
+    
+    StaticJsonDocument<256> doc;
+    doc["engine"] = vehicle.aiEngineHealth;
+    doc["battery"] = vehicle.aiBatteryHealth;
+    doc["brake"] = vehicle.aiBrakeHealth;
+    doc["oil"] = vehicle.aiOilHealth;
+    doc["overall"] = vehicle.aiOverallHealth;
+    doc["anomaly"] = vehicle.anomalyDetected;
+    doc["level"] = vehicle.alertLevel;
+    doc["message"] = vehicle.alertMessage;
+    
+    String output;
+    serializeJson(doc, output);
+    bluetooth.println("HEALTH:" + output);
+}
+
+// ============================================================
+//                    SEND DETAILED DATA TO MOBILE
+// ============================================================
+void sendDetailedDataToMobile() {
+    if (!btConnected) return;
+    
+    StaticJsonDocument<1024> doc;
+    
+    // All engine data
+    doc["rpm"] = vehicle.rpm;
+    doc["speed"] = vehicle.speed;
+    doc["gear"] = vehicle.gear;
+    doc["engineLoad"] = vehicle.engineLoad;
+    doc["coolantTemp"] = vehicle.coolantTemp;
+    doc["oilTemp"] = vehicle.oilTemp;
+    doc["exhaustTemp"] = vehicle.exhaustTemp;
+    doc["catTemp"] = vehicle.catTemp;
+    doc["horsepower"] = vehicle.horsepower;
+    doc["torque"] = vehicle.torque;
+    doc["engineHealth"] = vehicle.engineHealth;
+    
+    // Controls
+    doc["throttle"] = vehicle.throttlePct;
+    doc["brake"] = vehicle.brakePct;
+    doc["steering"] = vehicle.steeringDeg;
+    
+    // Brakes
+    doc["brakePadWear"] = vehicle.brakePadWear;
+    doc["brakeDiscWear"] = vehicle.brakeDiscWear;
+    doc["brakeTemp"] = vehicle.brakeTemp;
+    doc["brakePressure"] = vehicle.brakePressure;
+    doc["brakeFluid"] = vehicle.brakeFluidLevel;
+    
+    // Tyres
+    doc["tyreFL"] = vehicle.tyrePressureFL;
+    doc["tyreFR"] = vehicle.tyrePressureFR;
+    doc["tyreRL"] = vehicle.tyrePressureRL;
+    doc["tyreRR"] = vehicle.tyrePressureRR;
+    doc["tyreTempFL"] = vehicle.tyreTempFL;
+    doc["tyreTempFR"] = vehicle.tyreTempFR;
+    doc["tyreTempRL"] = vehicle.tyreTempRL;
+    doc["tyreTempRR"] = vehicle.tyreTempRR;
+    doc["tyreWearFL"] = vehicle.tyreWearFL;
+    doc["tyreWearFR"] = vehicle.tyreWearFR;
+    doc["tyreWearRL"] = vehicle.tyreWearRL;
+    doc["tyreWearRR"] = vehicle.tyreWearRR;
+    
+    // Electrical
+    doc["batteryVoltage"] = vehicle.batteryVoltage;
+    doc["alternatorVoltage"] = vehicle.alternatorVoltage;
+    doc["batterySOC"] = vehicle.batterySOC;
+    doc["batteryHealth"] = vehicle.batteryHealth;
+    
+    // Fuel
+    doc["fuelLevel"] = vehicle.fuelLevel;
+    doc["fuelConsumption"] = vehicle.fuelConsumption;
+    doc["fuelPressure"] = vehicle.fuelPressure;
+    doc["distance"] = vehicle.distance;
+    doc["maxSpeed"] = vehicle.maxSpeed;
+    
+    // Fluids
+    doc["oilLevel"] = vehicle.oilLevel;
+    doc["oilQuality"] = vehicle.oilQuality;
+    doc["oilPressure"] = vehicle.oilPressure;
+    doc["coolantLevel"] = vehicle.coolantLevel;
+    
+    // Diagnostics
+    doc["engineRunning"] = vehicle.engineRunning;
+    doc["checkEngine"] = vehicle.checkEngineLight;
+    doc["tpmsWarning"] = vehicle.tpmsWarning;
+    doc["absWarning"] = vehicle.absWarning;
+    doc["brakeWarning"] = vehicle.brakeWarning;
+    doc["oilWarning"] = vehicle.oilWarning;
+    doc["coolantWarning"] = vehicle.coolantWarning;
+    doc["batteryWarning"] = vehicle.batteryWarning;
+    
+    // AI Health
+    doc["aiEngine"] = vehicle.aiEngineHealth;
+    doc["aiBattery"] = vehicle.aiBatteryHealth;
+    doc["aiBrake"] = vehicle.aiBrakeHealth;
+    doc["aiOil"] = vehicle.aiOilHealth;
+    doc["aiOverall"] = vehicle.aiOverallHealth;
+    doc["anomaly"] = vehicle.anomalyDetected;
+    doc["alertMsg"] = vehicle.alertMessage;
+    doc["alertLevel"] = vehicle.alertLevel;
+    
+    // GPS
+    doc["latitude"] = vehicle.latitude;
+    doc["longitude"] = vehicle.longitude;
+    doc["satellites"] = vehicle.satellites;
+    
+    // Status
+    doc["mode"] = vehicle.modeIndex;
+    doc["rxCount"] = receiveCount;
+    
+    String output;
+    serializeJson(doc, output);
+    bluetooth.println("DETAILS:" + output);
+}
+
+// ============================================================
+//                    SEND ALERT TO MOBILE
+// ============================================================
+void sendAlertToMobile() {
+    if (!btConnected) return;
+    
+    StaticJsonDocument<128> doc;
+    doc["alert"] = vehicle.anomalyDetected;
+    doc["level"] = vehicle.alertLevel;
+    doc["message"] = vehicle.alertMessage;
+    doc["overallHealth"] = vehicle.aiOverallHealth;
+    doc["engineHealth"] = vehicle.aiEngineHealth;
+    doc["batteryHealth"] = vehicle.aiBatteryHealth;
+    
+    String output;
+    serializeJson(doc, output);
+    bluetooth.println("ALERT:" + output);
+}
+
+// ============================================================
+//                    STATUS PRINT
+// ============================================================
+void printStatus() {
+    Serial.println("\n╔═══════════════════════════════════════╗");
+    Serial.println("║     NODEMCU BRIDGE STATUS           ║");
+    Serial.println("╠═══════════════════════════════════════╣");
+    Serial.print("║ CAN Status: ");
+    Serial.print(canInitialized ? "✅ CONNECTED" : "❌ FAILED");
+    Serial.println("              ║");
+    Serial.print("║ Bluetooth: ");
+    Serial.print(btConnected ? "✅ CONNECTED" : "⏹ WAITING");
+    Serial.println("              ║");
+    Serial.print("║ Packets RX: ");
+    Serial.print(receiveCount);
+    Serial.println("                    ║");
+    Serial.print("║ Engine: ");
+    Serial.print(vehicle.engineRunning ? "🏁 RUNNING" : "⏹ STOPPED");
+    Serial.println("                 ║");
+    Serial.print("║ RPM: ");
+    Serial.print(vehicle.rpm, 0);
+    Serial.print(" | Speed: ");
+    Serial.print(vehicle.speed, 1);
+    Serial.println(" km/h          ║");
+    Serial.print("║ AI Health: ");
+    Serial.print(vehicle.aiOverallHealth, 1);
+    Serial.println("%                   ║");
+    Serial.print("║ Alert: ");
+    Serial.print(vehicle.anomalyDetected ? "⚠️ YES" : "✅ NO");
+    Serial.println("                    ║");
+    Serial.println("╚═══════════════════════════════════════╝\n");
+}
