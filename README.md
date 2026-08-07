@@ -11,7 +11,7 @@
 
 **VehicleGuard Pro** is a next-generation IoT-based vehicle monitoring and diagnostic system that combines **CAN Bus communication**, **Artificial Intelligence**, **Digital Twin technology**, **Cloud Connectivity**, and **Real-time Analytics** to monitor vehicle health.
 
-The project simulates and monitors more than **45 vehicle parameters**, predicts component health using AI algorithms, detects anomalies in real time, and displays information across multiple platforms including a Web Dashboard, LCD Display, Mobile Application, and Digital Twin interface.
+The project simulates and monitors more than **50+ vehicle parameters**, predicts component health using AI algorithms, detects anomalies in real time, and displays information across multiple platforms including a Web Dashboard, LCD Display, Mobile Application, and Digital Twin interface.
 
 ---
 
@@ -57,9 +57,9 @@ LCD Display  Web Dashboard  Digital Twin   MQTT Cloud
 
 # Project Highlights
 
-✔ 45+ Vehicle Parameters
+✔ 50+ Vehicle Parameters
 
-✔ 17 CAN Message IDs
+✔ 22 CAN Message IDs
 
 ✔ AI Health Prediction
 
@@ -85,7 +85,8 @@ LCD Display  Web Dashboard  Digital Twin   MQTT Cloud
 |------------|----------|
 | ESP32 Development Board | 2 |
 | NodeMCU ESP8266 | 1 |
-| MCP2515 CAN Module | 3 |
+| MCP2515 CAN Module | 1 |
+| TJA1050 CAN Transceiver | 2 |
 | HC-05 Bluetooth Module | 1 |
 | MPU6050 Sensor | 1 |
 | NEO-6M GPS Module | 1 |
@@ -235,19 +236,6 @@ AI Processing ESP32
 ---
 
 
-# Future Improvements
-
-- Machine Learning Based Prediction
-- OBD-II Integration
-- Firebase Cloud Storage
-- Android & iOS App
-- Voice Assistant Support
-- OTA Firmware Updates
-- Fleet Management Dashboard
-- Predictive Maintenance Scheduling
-
----
-
 # Applications
 
 - Smart Vehicles
@@ -265,12 +253,11 @@ AI Processing ESP32
 
 | Feature | Performance |
 |----------|-------------|
-| Vehicle Parameters | 45+ |
-| CAN IDs | 17 |
+| Vehicle Parameters | 50+ |
+| CAN IDs | 22 |
 | CAN Packet Loss | <0.1% |
 | Web Response | <500 ms |
 | AI Prediction Accuracy | >95% |
-| System Cost | ₹4,875 |
 
 ---
 
