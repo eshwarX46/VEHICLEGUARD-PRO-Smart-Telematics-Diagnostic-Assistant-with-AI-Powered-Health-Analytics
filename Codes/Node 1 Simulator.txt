@@ -1,0 +1,1656 @@
+// esp32_complete_data_collector.ino
+// ESP32 - REALISTIC VEHICLE SIMULATOR WITH CAN TRANSMISSION
+// All data is simulated except specified hardware pins
+
+#include <TinyGPS++.h>
+#include <Wire.h>
+#include <MPU6050.h>
+#include <CAN.h>
+
+// ============================================================
+//                    HARDWARE PIN DEFINITIONS (ONLY THESE)
+// ============================================================
+#define TX_GPIO_NUM 21
+#define RX_GPIO_NUM 22
+
+#define GPS_RX 16
+#define GPS_TX 17
+#define LED_PIN 13
+
+#define I2C_SDA 33
+#define I2C_SCL 32
+
+#define LED_GREEN 4
+#define LED_WHITE 14
+#define LED_RED 15
+#define LED_BLUE 18
+
+#define BUTTON_IGNITION 23
+#define BUTTON_MODE 19
+#define BUTTON_FAILURE 25
+#define BUTTON_CLEAR 26
+
+#define POT_THROTTLE 34
+#define POT_BRAKE 35
+#define POT_STEERING 36
+
+// ============================================================
+//                    OBJECTS
+// ============================================================
+#define GPS_SERIAL Serial2
+TinyGPSPlus gps;
+MPU6050 mpu;
+
+// ============================================================
+//                    VEHICLE PARAMETERS
+// ============================================================
+#define MAX_RPM 7200
+#define IDLE_RPM 750
+#define REDLINE_RPM 6500
+#define MAX_SPEED 280.0
+#define FUEL_TANK_CAPACITY 60.0
+
+// Realistic temperature ranges
+#define NORMAL_COOLANT_TEMP 90.0
+#define NORMAL_OIL_TEMP 95.0
+
+// ============================================================
+//                    CAN VARIABLES
+// ============================================================
+int sendCount = 0;
+int receiveCount = 0;
+unsigned long lastCANsend = 0;
+unsigned long lastCANreceive = 0;
+bool canStatus = false;
+bool verboseCAN = true;
+
+// ============================================================
+//                    VARIABLES
+// ============================================================
+unsigned long lastSend = 0;
+unsigned long lastGPScan = 0;
+int nodeId = 1;
+bool mpuOK = false;
+bool gpsValid = false;
+
+// MPU6050 Data (Simulated)
+int16_t ax = 0, ay = 0, az = -1000;
+int16_t gx = 0, gy = 0, gz = 0;
+float tempC = 25.0;
+
+// GPS Data (Simulated)
+double simulatedLat = 37.7749;
+double simulatedLng = -122.4194;
+float simulatedAltitude = 15.0;
+float simulatedSpeed = 0.0;
+float simulatedCourse = 0.0;
+int simulatedSatellites = 8;
+
+// Potentiometer Data (From actual hardware)
+int throttlePct = 0;
+int brakePct = 0;
+int steeringDeg = 0;
+
+// Button Data (From actual hardware)
+bool lastIgnition = false;
+bool lastMode = false;
+bool lastFailure = false;
+bool lastClear = false;
+bool engineRunning = false;
+bool checkEngine = false;
+int pressCount = 0;
+int modeIndex = 0;
+String currentMode = "AUTO";
+
+// Virtual Buttons (Simulated)
+bool headlightOn = false;
+bool hornOn = false;
+bool wiperOn = false;
+unsigned long lastHeadlightToggle = 0;
+unsigned long lastHornToggle = 0;
+unsigned long lastWiperToggle = 0;
+bool hornActive = false;
+unsigned long hornStartTime = 0;
+
+// ============================================================
+//                    REALISTIC VEHICLE DATA (All Simulated)
+// ============================================================
+struct VehicleData {
+    // Engine
+    float rpm = 0.0;
+    float engineLoad = 0.0;
+    float throttlePos = 0.0;
+    float massAirFlow = 0.0;
+    float fuelInjectorPulse = 0.0;
+    float ignitionTiming = 0.0;
+    float engineHealth = 100.0;
+    float engineHours = 0.0;
+    
+    // Temperatures - Realistic normal ranges
+    float coolantTemp = 45.0;
+    float oilTemp = 45.0;
+    float intakeAirTemp = 25.0;
+    float ambientTemp = 22.0;
+    float exhaustTemp = 200.0;
+    float catTemp = 300.0;
+    
+    // Drivetrain
+    float speed = 0.0;
+    float acceleration = 0.0;
+    int gear = 0;
+    float clutchWear = 100.0;
+    float transmissionHealth = 100.0;
+    float torque = 0.0;
+    float horsepower = 0.0;
+    float driveShaftSpeed = 0.0;
+    
+    // Brakes
+    float brakePadWear = 100.0;
+    float brakeFluidLevel = 100.0;
+    float brakeDiscWear = 100.0;
+    float brakeTemp = 30.0;
+    float brakePressure = 0.0;
+    float brakeDistance = 0.0;
+    
+    // Tyres
+    float tyrePressureFL = 35.0;
+    float tyrePressureFR = 35.0;
+    float tyrePressureRL = 35.0;
+    float tyrePressureRR = 35.0;
+    float tyreTempFL = 25.0;
+    float tyreTempFR = 25.0;
+    float tyreTempRL = 25.0;
+    float tyreTempRR = 25.0;
+    float tyreWearFL = 100.0;
+    float tyreWearFR = 100.0;
+    float tyreWearRL = 100.0;
+    float tyreWearRR = 100.0;
+    float tyreGripFL = 100.0;
+    float tyreGripFR = 100.0;
+    float tyreGripRL = 100.0;
+    float tyreGripRR = 100.0;
+    
+    // Electrical
+    float batteryVoltage = 12.6;
+    float alternatorVoltage = 14.2;
+    float batteryHealth = 100.0;
+    float batterySOC = 95.0;
+    float batteryTemp = 25.0;
+    float currentDraw = 0.0;
+    float alternatorLoad = 0.0;
+    
+    // Fluids
+    float oilLevel = 100.0;
+    float oilQuality = 100.0;
+    float oilPressure = 0.0;
+    float coolantLevel = 100.0;
+    float washerFluid = 100.0;
+    float brakeFluidLevel_actual = 100.0;
+    float powerSteeringFluid = 100.0;
+    
+    // Fuel
+    float fuelLevel = 45.0;
+    float fuelConsumption = 0.0;
+    float fuelPressure = 0.0;
+    float fuelTemp = 25.0;
+    float distance = 0.0;
+    float maxSpeed = 0.0;
+    float avgSpeed = 0.0;
+    float tripDistance = 0.0;
+    float tripTime = 0.0;
+    
+    // Diagnostics
+    bool checkEngineLight = false;
+    bool tpmsWarning = false;
+    bool serviceRequired = false;
+    bool absWarning = false;
+    bool tractionControlActive = false;
+    bool espActive = false;
+    bool brakeWarning = false;
+    bool oilWarning = false;
+    bool coolantWarning = false;
+    bool batteryWarning = false;
+    
+    // Environment
+    float altitude = 15.0;
+    float latitude = 37.7749;
+    float longitude = -122.4194;
+    int satellites = 8;
+    
+    // Comfort
+    bool acOn = false;
+    bool heaterOn = false;
+    bool defrostOn = false;
+    float cabinTemp = 22.0;
+    float fanSpeed = 0.0;
+} vehicle;
+
+// Internal state for realistic simulation
+struct DriveState {
+    float accelerationPedal = 0.0;
+    float brakePedal = 0.0;
+    float steeringAngle = 0.0;
+    float wheelSpeedFL = 0.0;
+    float wheelSpeedFR = 0.0;
+    float wheelSpeedRL = 0.0;
+    float wheelSpeedRR = 0.0;
+    float yawRate = 0.0;
+    float lateralG = 0.0;
+    float longitudinalG = 0.0;
+    bool clutchEngaged = true;
+    bool handbrakeOn = false;
+    float throttleResponse = 0.0;
+    float engineBraking = 0.0;
+} driveState;
+
+// ============================================================
+//                    SETUP
+// ============================================================
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    
+    Serial.println("========================================");
+    Serial.println("ESP32 - REALISTIC VEHICLE SIMULATOR");
+    Serial.println("WITH CAN TRANSMISSION");
+    Serial.println("========================================");
+    Serial.println("Verbose CAN Logging: ENABLED\n");
+    
+    // ---- INITIALIZE HARDWARE PINS ----
+    
+    // LEDs
+    pinMode(LED_PIN, OUTPUT);
+    pinMode(LED_GREEN, OUTPUT);
+    pinMode(LED_WHITE, OUTPUT);
+    pinMode(LED_RED, OUTPUT);
+    pinMode(LED_BLUE, OUTPUT);
+    
+    // Buttons (Input Pull-up)
+    pinMode(BUTTON_IGNITION, INPUT_PULLUP);
+    pinMode(BUTTON_MODE, INPUT_PULLUP);
+    pinMode(BUTTON_FAILURE, INPUT_PULLUP);
+    pinMode(BUTTON_CLEAR, INPUT_PULLUP);
+    
+    // MPU6050 (Optional - if connected, it will read, otherwise simulate)
+    Wire.begin(I2C_SDA, I2C_SCL);
+    mpu.initialize();
+    mpu.setSleepEnabled(false);
+    delay(100);
+    
+    mpu.getAcceleration(&ax, &ay, &az);
+    if (ax != 0 || ay != 0 || az != 0) {
+        Serial.println("MPU6050 CONNECTED! (Reading real data)");
+        mpuOK = true;
+    } else {
+        Serial.println("MPU6050 NOT DETECTED! (Using simulated data)");
+        mpuOK = false;
+    }
+    
+    // GPS (Optional - if connected, it will read, otherwise simulate)
+    GPS_SERIAL.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+    Serial.println("GPS Init (Pins 16,17)");
+    
+    // CAN
+    CAN.setPins(RX_GPIO_NUM, TX_GPIO_NUM);
+    if (!CAN.begin(250E3)) {
+        Serial.println("❌ Starting CAN failed!");
+        canStatus = false;
+    } else {
+        Serial.println("✅ CAN Ready at 250KBPS!");
+        canStatus = true;
+    }
+    
+    Serial.println("\nVehicle Simulator Initialized");
+    Serial.println("Hardware connected:");
+    Serial.println("  - BUTTON_IGNITION (GPIO23)");
+    Serial.println("  - BUTTON_MODE (GPIO19)");
+    Serial.println("  - BUTTON_FAILURE (GPIO25)");
+    Serial.println("  - BUTTON_CLEAR (GPIO26)");
+    Serial.println("  - POT_THROTTLE (GPIO34)");
+    Serial.println("  - POT_BRAKE (GPIO35)");
+    Serial.println("  - POT_STEERING (GPIO36)");
+    Serial.println("  - LEDs (GPIO4,14,15,18,13)");
+    Serial.println("  - CAN (GPIO21,22)");
+    Serial.println("  - GPS (GPIO16,17)");
+    Serial.println("  - I2C (GPIO33,32)");
+    Serial.println("\nPress Ignition to start engine");
+    Serial.println("========================================\n");
+}
+
+// ============================================================
+//                    MAIN LOOP
+// ============================================================
+void loop() {
+    // Read from GPS hardware (if available) or use simulation
+    readGPS();
+    
+    // Read from MPU6050 hardware (if available) or use simulation
+    readMPU6050();
+    
+    // Read buttons from actual hardware
+    readButtons();
+    
+    // Read potentiometers from actual hardware
+    readPots();
+    
+    // Update all simulated vehicle data based on inputs
+    updateRealisticVehicleData();
+    
+    // Update virtual buttons (simulated automatic functions)
+    updateVirtualButtons();
+    
+    // Update LEDs based on vehicle state
+    updateLEDs();
+    
+    // Send all data via CAN every 2 seconds
+    if (millis() - lastCANsend > 2000 && canStatus) {
+        sendAllDataViaCAN();
+        lastCANsend = millis();
+    }
+    
+    // Receive CAN data
+    if (canStatus) {
+        receiveCANData();
+    }
+    
+    // Print data every 2 seconds
+    if (millis() - lastSend > 2000) {
+        printRealisticData();
+        lastSend = millis();
+    }
+    
+    delay(10);
+}
+
+// ============================================================
+//                    READ FUNCTIONS
+// ============================================================
+void readGPS() {
+    // Read from actual GPS hardware if available
+    while (GPS_SERIAL.available() > 0) {
+        char c = GPS_SERIAL.read();
+        gps.encode(c);
+    }
+    
+    // If GPS has valid data, use it
+    if (gps.location.isValid()) {
+        gpsValid = true;
+        vehicle.latitude = gps.location.lat();
+        vehicle.longitude = gps.location.lng();
+        vehicle.altitude = gps.altitude.meters();
+        vehicle.satellites = gps.satellites.value();
+        simulatedSpeed = gps.speed.kmph();
+        simulatedCourse = gps.course.deg();
+        simulatedSatellites = gps.satellites.value();
+    } else {
+        gpsValid = false;
+    }
+}
+
+void readMPU6050() {
+    if (mpuOK) {
+        mpu.getAcceleration(&ax, &ay, &az);
+        mpu.getRotation(&gx, &gy, &gz);
+        tempC = mpu.getTemperature() / 340.0 + 36.53;
+    }
+}
+
+void readPots() {
+    throttlePct = map(analogRead(POT_THROTTLE), 0, 4095, 0, 100);
+    brakePct = map(analogRead(POT_BRAKE), 0, 4095, 0, 100);
+    steeringDeg = map(analogRead(POT_STEERING), 0, 4095, -45, 45);
+    
+    driveState.accelerationPedal = throttlePct / 100.0;
+    driveState.brakePedal = brakePct / 100.0;
+    driveState.steeringAngle = steeringDeg;
+}
+
+void readButtons() {
+    unsigned long now = millis();
+    
+    bool reading = !digitalRead(BUTTON_IGNITION);
+    if (reading != lastIgnition) {
+        if (reading) {
+            engineRunning = !engineRunning;
+            if (engineRunning) {
+                startEngine();
+            } else {
+                stopEngine();
+            }
+            pressCount++;
+        }
+        lastIgnition = reading;
+    }
+    
+    reading = !digitalRead(BUTTON_MODE);
+    if (reading != lastMode) {
+        if (reading) {
+            modeIndex = (modeIndex + 1) % 4;
+            switch(modeIndex) {
+                case 0: currentMode = "ECO"; break;
+                case 1: currentMode = "COMFORT"; break;
+                case 2: currentMode = "SPORT"; break;
+                case 3: currentMode = "SPORT+"; break;
+            }
+            pressCount++;
+            Serial.print("Drive Mode: ");
+            Serial.println(currentMode);
+        }
+        lastMode = reading;
+    }
+    
+    reading = !digitalRead(BUTTON_FAILURE);
+    if (reading != lastFailure) {
+        if (reading) {
+            checkEngine = !checkEngine;
+            pressCount++;
+            Serial.print("Check Engine: ");
+            Serial.println(checkEngine ? "ON" : "OFF");
+            if (checkEngine) {
+                vehicle.checkEngineLight = true;
+                generateRandomFault();
+            } else {
+                clearFaults();
+            }
+        }
+        lastFailure = reading;
+    }
+    
+    reading = !digitalRead(BUTTON_CLEAR);
+    if (reading != lastClear) {
+        if (reading) {
+            clearFaults();
+            pressCount++;
+            Serial.println("All Faults Cleared!");
+        }
+        lastClear = reading;
+    }
+}
+
+// ============================================================
+//                    VEHICLE SIMULATION FUNCTIONS
+// ============================================================
+void generateRandomFault() {
+    int fault = random(0, 10);
+    switch(fault) {
+        case 0:
+            vehicle.oilWarning = true;
+            Serial.println("⚠️ Low Oil Pressure Warning!");
+            break;
+        case 1:
+            vehicle.coolantWarning = true;
+            Serial.println("⚠️ High Coolant Temperature!");
+            break;
+        case 2:
+            vehicle.batteryWarning = true;
+            Serial.println("⚠️ Charging System Fault!");
+            break;
+        case 3:
+            vehicle.brakeWarning = true;
+            Serial.println("⚠️ Brake System Fault!");
+            break;
+        case 4:
+            vehicle.absWarning = true;
+            Serial.println("⚠️ ABS System Fault!");
+            break;
+        case 5:
+            vehicle.tpmsWarning = true;
+            Serial.println("⚠️ Low Tyre Pressure!");
+            break;
+        case 6:
+            vehicle.transmissionHealth = 40 + random(0, 20);
+            Serial.println("⚠️ Transmission Fault!");
+            break;
+        case 7:
+            vehicle.engineHealth = 40 + random(0, 20);
+            Serial.println("⚠️ Engine Performance Degraded!");
+            break;
+        case 8:
+            vehicle.brakePadWear = 15 + random(0, 15);
+            Serial.println("⚠️ Brake Pads Worn!");
+            break;
+        case 9:
+            vehicle.tyreWearFL = 20 + random(0, 20);
+            vehicle.tyreWearFR = 20 + random(0, 20);
+            Serial.println("⚠️ Tyre Wear Warning!");
+            break;
+    }
+    vehicle.serviceRequired = true;
+}
+
+void clearFaults() {
+    vehicle.checkEngineLight = false;
+    vehicle.tpmsWarning = false;
+    vehicle.serviceRequired = false;
+    vehicle.absWarning = false;
+    vehicle.brakeWarning = false;
+    vehicle.oilWarning = false;
+    vehicle.coolantWarning = false;
+    vehicle.batteryWarning = false;
+    vehicle.tractionControlActive = false;
+    vehicle.espActive = false;
+    checkEngine = false;
+    
+    if (!engineRunning) {
+        vehicle.engineHealth = (vehicle.engineHealth + 20 > 100.0f) ? 100.0f : vehicle.engineHealth + 20;
+        vehicle.transmissionHealth = (vehicle.transmissionHealth + 20 > 100.0f) ? 100.0f : vehicle.transmissionHealth + 20;
+        vehicle.brakePadWear = (vehicle.brakePadWear + 20 > 100.0f) ? 100.0f : vehicle.brakePadWear + 20;
+        vehicle.tyreWearFL = (vehicle.tyreWearFL + 20 > 100.0f) ? 100.0f : vehicle.tyreWearFL + 20;
+        vehicle.tyreWearFR = (vehicle.tyreWearFR + 20 > 100.0f) ? 100.0f : vehicle.tyreWearFR + 20;
+        vehicle.tyreWearRL = (vehicle.tyreWearRL + 20 > 100.0f) ? 100.0f : vehicle.tyreWearRL + 20;
+        vehicle.tyreWearRR = (vehicle.tyreWearRR + 20 > 100.0f) ? 100.0f : vehicle.tyreWearRR + 20;
+    }
+}
+
+void startEngine() {
+    engineRunning = true;
+    vehicle.rpm = IDLE_RPM;
+    vehicle.coolantTemp = 45.0;
+    vehicle.oilTemp = 45.0;
+    vehicle.batteryVoltage = 14.2;
+    vehicle.engineLoad = 0.05;
+    Serial.println("🏁 Engine Started!");
+    Serial.print("RPM: "); Serial.print(vehicle.rpm);
+    Serial.println(" (Idle)");
+}
+
+void stopEngine() {
+    engineRunning = false;
+    vehicle.rpm = 0;
+    vehicle.speed = 0;
+    vehicle.engineLoad = 0;
+    vehicle.throttlePos = 0;
+    vehicle.fuelConsumption = 0;
+    
+    // Reset warnings when engine stops
+    vehicle.oilWarning = false;
+    vehicle.coolantWarning = false;
+    vehicle.checkEngineLight = false;
+    
+    Serial.println("🛑 Engine Stopped");
+}
+
+void updateRealisticVehicleData() {
+    static unsigned long lastUpdate = 0;
+    static float dt = 0.01;
+    
+    if (millis() - lastUpdate < 100) return;
+    dt = (millis() - lastUpdate) / 1000.0;
+    lastUpdate = millis();
+    
+    // Convert pedal positions from hardware
+    float throttleInput = driveState.accelerationPedal;
+    float brakeInput = driveState.brakePedal;
+    float steeringInput = driveState.steeringAngle / 45.0;
+    
+    // --- ENGINE SIMULATION ---
+    if (engineRunning) {
+        // Throttle response with realistic lag
+        float targetThrottle = throttleInput * 0.85 + 0.15;
+        driveState.throttleResponse += (targetThrottle - driveState.throttleResponse) * 2.5 * dt;
+        
+        // RPM calculation with inertia
+        float loadFactor = 1.0 - (vehicle.speed / MAX_SPEED) * 0.3;
+        float targetRPM = IDLE_RPM + (MAX_RPM - IDLE_RPM) * driveState.throttleResponse * loadFactor;
+        
+        // Engine braking when throttle released
+        float engineBraking = 0.0;
+        if (throttleInput < 0.05 && vehicle.speed > 5) {
+            engineBraking = -150 * (vehicle.speed / 100.0);
+        }
+        
+        // RPM with inertia
+        float rpmInertia = 300.0;
+        vehicle.rpm += (targetRPM - vehicle.rpm) / rpmInertia * 100.0 * dt;
+        vehicle.rpm += engineBraking * dt;
+        
+        // RPM limits
+        if (vehicle.rpm > REDLINE_RPM) {
+            vehicle.rpm = REDLINE_RPM + (vehicle.rpm - REDLINE_RPM) * 0.5;
+            Serial.println("⚠️ RPM LIMITER!");
+        }
+        if (vehicle.rpm < IDLE_RPM) vehicle.rpm = IDLE_RPM;
+        if (vehicle.rpm > MAX_RPM) vehicle.rpm = MAX_RPM;
+        
+        // Engine load
+        vehicle.engineLoad = 0.1 + (vehicle.rpm / MAX_RPM) * driveState.throttleResponse * 0.85;
+        if (vehicle.engineLoad > 0.95) vehicle.engineLoad = 0.95;
+        
+        // Engine parameters
+        vehicle.massAirFlow = vehicle.rpm / 60.0 * 0.5 * (0.5 + driveState.throttleResponse * 0.5);
+        vehicle.fuelInjectorPulse = 2.0 + vehicle.engineLoad * 8.0;
+        vehicle.ignitionTiming = 10.0 + (vehicle.rpm / 1000) * 5.0 - vehicle.engineLoad * 10.0;
+        if (vehicle.ignitionTiming < 5) vehicle.ignitionTiming = 5;
+        if (vehicle.ignitionTiming > 35) vehicle.ignitionTiming = 35;
+        
+        // Torque curve (peak at ~4000 RPM)
+        float torqueCurve = 1.0 - 4.0 * pow((vehicle.rpm / MAX_RPM - 0.4), 2) + 0.3;
+        if (torqueCurve < 0.3) torqueCurve = 0.3;
+        vehicle.torque = 250.0 * torqueCurve * driveState.throttleResponse * 1.2;
+        if (vehicle.torque < 0) vehicle.torque = 0;
+        vehicle.horsepower = vehicle.torque * vehicle.rpm / 5252.0;
+        
+        // --- DRIVETRAIN AND SPEED (FIXED) ---
+        float throttleFactor = driveState.accelerationPedal;
+        float rpmFactor = (vehicle.rpm - IDLE_RPM) / (MAX_RPM - IDLE_RPM);
+        if (rpmFactor < 0) rpmFactor = 0;
+        if (rpmFactor > 1) rpmFactor = 1;
+        
+        // Simple but effective speed calculation
+        float accelerationForce = throttleFactor * rpmFactor * 6000.0;
+        float resistanceForce = 200.0 + (vehicle.speed * 1.5) + (vehicle.speed * vehicle.speed * 0.01);
+        float netForce = accelerationForce - resistanceForce;
+        float acceleration = netForce / 1500.0;
+        
+        // Apply braking
+        if (brakeInput > 0.01) {
+            float brakeForce = brakeInput * 5000.0;
+            acceleration -= brakeForce / 1500.0;
+            vehicle.brakeTemp += brakeInput * 10.0 * dt;
+            vehicle.brakePadWear -= brakeInput * 0.001 * dt * 10;
+            vehicle.brakeDiscWear -= brakeInput * 0.0005 * dt * 10;
+            vehicle.brakePressure = brakeInput * 100.0;
+        } else {
+            vehicle.brakePressure = 0;
+            if (vehicle.brakeTemp > 30) vehicle.brakeTemp -= 0.5 * dt * 10;
+        }
+        
+        // Update speed
+        vehicle.speed += acceleration * dt * 3.6;
+        if (vehicle.speed < 0) vehicle.speed = 0;
+        if (vehicle.speed > MAX_SPEED) vehicle.speed = MAX_SPEED;
+        vehicle.acceleration = acceleration;
+        
+        // --- AUTOMATIC GEAR SELECTION ---
+        if (vehicle.speed < 0.5) {
+            vehicle.gear = 1;
+        } else if (vehicle.speed < 20) {
+            vehicle.gear = 1;
+        } else if (vehicle.speed < 35) {
+            vehicle.gear = 2;
+        } else if (vehicle.speed < 55) {
+            vehicle.gear = 3;
+        } else if (vehicle.speed < 80) {
+            vehicle.gear = 4;
+        } else if (vehicle.speed < 110) {
+            vehicle.gear = 5;
+        } else {
+            vehicle.gear = 6;
+        }
+        
+        // Wheel speeds
+        float wheelRPM = vehicle.speed / 3.6 / (2 * 3.14159 * 0.33) * 60;
+        vehicle.driveShaftSpeed = wheelRPM * 3.5;
+        
+        // ABS and traction control
+        if (brakeInput > 0.5 && vehicle.speed > 30) {
+            vehicle.absWarning = true;
+            if (brakeInput > 0.8) {
+                vehicle.tractionControlActive = true;
+            }
+        } else {
+            vehicle.absWarning = false;
+            vehicle.tractionControlActive = false;
+        }
+        
+        // ESP
+        if (abs(steeringInput) > 0.5 && vehicle.speed > 50) {
+            vehicle.espActive = true;
+        } else {
+            vehicle.espActive = false;
+        }
+        
+         // --- REALISTIC TEMPERATURES ---
+        float coolingEfficiency = 0.3 + (vehicle.speed / 150.0) * 0.7;
+        if (coolingEfficiency > 1.0) coolingEfficiency = 1.0;
+        if (coolingEfficiency < 0.3) coolingEfficiency = 0.3;
+        
+        float heatGeneration = (vehicle.rpm / MAX_RPM) * 0.4 + vehicle.engineLoad * 0.6;
+        
+        float targetCoolantTemp = 80.0 + (vehicle.engineLoad * 15.0) + (vehicle.rpm / MAX_RPM) * 5.0;
+        if (targetCoolantTemp > 100.0) targetCoolantTemp = 100.0;
+        
+        vehicle.coolantTemp += (targetCoolantTemp - vehicle.coolantTemp) * 0.05 * dt;
+        vehicle.coolantTemp += (heatGeneration * 5.0 * dt);
+        vehicle.coolantTemp -= (coolingEfficiency * 1.5 * dt);
+        
+        if (vehicle.coolantTemp < 40.0) vehicle.coolantTemp = 40.0;
+        if (vehicle.coolantTemp > 105.0) vehicle.coolantTemp = 105.0;
+        
+        float targetOilTemp = vehicle.coolantTemp + 5.0 + (vehicle.engineLoad * 10.0);
+        if (targetOilTemp > 110.0) targetOilTemp = 110.0;
+        
+        vehicle.oilTemp += (targetOilTemp - vehicle.oilTemp) * 0.03 * dt;
+        vehicle.oilTemp += (heatGeneration * 3.0 * dt);
+        vehicle.oilTemp -= (coolingEfficiency * 0.5 * dt);
+        
+        if (vehicle.oilTemp < 40.0) vehicle.oilTemp = 40.0;
+        if (vehicle.oilTemp > 110.0) vehicle.oilTemp = 110.0;
+        
+        vehicle.exhaustTemp = 200.0 + (vehicle.rpm / MAX_RPM) * 400.0 + (vehicle.engineLoad * 80.0);
+        if (vehicle.exhaustTemp > 600.0) vehicle.exhaustTemp = 600.0;
+        
+        vehicle.catTemp = 300.0 + (vehicle.rpm / MAX_RPM) * 350.0;
+        if (vehicle.catTemp > 650.0) vehicle.catTemp = 650.0;
+        
+        vehicle.oilPressure = 10.0 + (vehicle.rpm / MAX_RPM) * 40.0;
+        if (vehicle.oilPressure < 5) vehicle.oilPressure = 5;
+        
+    } else {
+        // Engine off
+        vehicle.rpm = 0;
+        vehicle.engineLoad = 0;
+        vehicle.massAirFlow = 0;
+        vehicle.fuelInjectorPulse = 0;
+        vehicle.ignitionTiming = 0;
+        vehicle.torque = 0;
+        vehicle.horsepower = 0;
+        
+        // Coast to stop
+        if (vehicle.speed > 0) {
+            vehicle.speed -= 2.0 * dt;
+            if (vehicle.speed < 0) vehicle.speed = 0;
+        }
+        vehicle.gear = 0;
+        vehicle.driveShaftSpeed = 0;
+        vehicle.tractionControlActive = false;
+        vehicle.espActive = false;
+        vehicle.absWarning = false;
+        
+        // Cool down
+        if (vehicle.coolantTemp > 40.0) {
+            vehicle.coolantTemp -= 0.5 * dt;
+            if (vehicle.coolantTemp < 40.0) vehicle.coolantTemp = 40.0;
+        }
+        if (vehicle.oilTemp > 40.0) {
+            vehicle.oilTemp -= 0.3 * dt;
+            if (vehicle.oilTemp < 40.0) vehicle.oilTemp = 40.0;
+        }
+        if (vehicle.exhaustTemp > 30) vehicle.exhaustTemp -= 5.0 * dt;
+        if (vehicle.catTemp > 30) vehicle.catTemp -= 8.0 * dt;
+        if (vehicle.brakeTemp > 30) vehicle.brakeTemp -= 2.0 * dt;
+    }
+    
+    // --- TYRE SIMULATION ---
+    float tempFactorFL = (vehicle.tyreTempFL - 20) * 0.02;
+    float tempFactorFR = (vehicle.tyreTempFR - 20) * 0.02;
+    float tempFactorRL = (vehicle.tyreTempRL - 20) * 0.02;
+    float tempFactorRR = (vehicle.tyreTempRR - 20) * 0.02;
+    
+    vehicle.tyrePressureFL = 35.0 + tempFactorFL * 5.0;
+    vehicle.tyrePressureFR = 35.0 + tempFactorFR * 5.0;
+    vehicle.tyrePressureRL = 35.0 + tempFactorRL * 5.0;
+    vehicle.tyrePressureRR = 35.0 + tempFactorRR * 5.0;
+    
+    float speedHeat = vehicle.speed / 100.0;
+    float steeringHeat = abs(steeringInput) * 0.3;
+    float brakeHeat = brakeInput * 0.2;
+    
+    vehicle.tyreTempFL += (speedHeat * 5.0 + steeringHeat * 10.0 + brakeHeat * 5.0 - 0.5) * dt * 10;
+    vehicle.tyreTempFR += (speedHeat * 5.0 + steeringHeat * 10.0 + brakeHeat * 5.0 - 0.5) * dt * 10;
+    vehicle.tyreTempRL += (speedHeat * 4.0 + brakeHeat * 3.0 - 0.5) * dt * 10;
+    vehicle.tyreTempRR += (speedHeat * 4.0 + brakeHeat * 3.0 - 0.5) * dt * 10;
+    
+    if (vehicle.tyreTempFL < 15) vehicle.tyreTempFL = 15;
+    if (vehicle.tyreTempFR < 15) vehicle.tyreTempFR = 15;
+    if (vehicle.tyreTempRL < 15) vehicle.tyreTempRL = 15;
+    if (vehicle.tyreTempRR < 15) vehicle.tyreTempRR = 15;
+    if (vehicle.tyreTempFL > 80) vehicle.tyreTempFL = 80;
+    if (vehicle.tyreTempFR > 80) vehicle.tyreTempFR = 80;
+    if (vehicle.tyreTempRL > 80) vehicle.tyreTempRL = 80;
+    if (vehicle.tyreTempRR > 80) vehicle.tyreTempRR = 80;
+    
+    float wearRate = vehicle.speed / 200.0 + abs(steeringInput) * 0.2;
+    if (vehicle.speed > 10) {
+        vehicle.tyreWearFL -= wearRate * 0.001 * dt * 10;
+        vehicle.tyreWearFR -= wearRate * 0.001 * dt * 10;
+        vehicle.tyreWearRL -= wearRate * 0.0008 * dt * 10;
+        vehicle.tyreWearRR -= wearRate * 0.0008 * dt * 10;
+    }
+    
+    float tempGrip = 1.0 - abs(vehicle.tyreTempFL - 50) / 30.0;
+    if (tempGrip < 0.5) tempGrip = 0.5;
+    vehicle.tyreGripFL = tempGrip * (vehicle.tyreWearFL / 100.0);
+    vehicle.tyreGripFR = tempGrip * (vehicle.tyreWearFR / 100.0);
+    vehicle.tyreGripRL = tempGrip * (vehicle.tyreWearRL / 100.0);
+    vehicle.tyreGripRR = tempGrip * (vehicle.tyreWearRR / 100.0);
+    
+    if (vehicle.tyrePressureFL < 30 || vehicle.tyrePressureFR < 30 ||
+        vehicle.tyrePressureRL < 30 || vehicle.tyrePressureRR < 30) {
+        vehicle.tpmsWarning = true;
+    } else {
+        vehicle.tpmsWarning = false;
+    }
+    
+    // --- FUEL AND CONSUMPTION ---
+    if (engineRunning) {
+        float baseConsumption = 5.0 + (vehicle.rpm / MAX_RPM) * 15.0;
+        float loadConsumption = vehicle.engineLoad * 8.0;
+        vehicle.fuelConsumption = baseConsumption + loadConsumption;
+        
+        float fuelRate = vehicle.rpm / 1000.0 * 0.5 + vehicle.engineLoad * 2.0;
+        vehicle.fuelLevel -= fuelRate * dt / 3600.0;
+        
+        vehicle.fuelPressure = 3.0 + vehicle.engineLoad * 2.0;
+        vehicle.fuelTemp = vehicle.ambientTemp + vehicle.engineLoad * 20.0;
+        
+        float speedMS = vehicle.speed / 3.6;
+        vehicle.distance += speedMS * dt / 1000.0;
+        vehicle.tripDistance += speedMS * dt / 1000.0;
+        vehicle.tripTime += dt / 3600.0;
+        
+        if (vehicle.speed > vehicle.maxSpeed) vehicle.maxSpeed = vehicle.speed;
+        if (vehicle.tripTime > 0) {
+            vehicle.avgSpeed = vehicle.tripDistance / vehicle.tripTime;
+        }
+        
+    } else {
+        vehicle.fuelConsumption = 0;
+        vehicle.fuelPressure = 0;
+    }
+    
+    if (vehicle.fuelLevel < 0) vehicle.fuelLevel = 0;
+    if (vehicle.fuelLevel > FUEL_TANK_CAPACITY) vehicle.fuelLevel = FUEL_TANK_CAPACITY;
+    
+    // --- ELECTRICAL SYSTEM ---
+    if (engineRunning) {
+        float altEfficiency = 0.3 + (vehicle.rpm / MAX_RPM) * 0.7;
+        vehicle.alternatorVoltage = 13.5 + altEfficiency * 1.0;
+        vehicle.alternatorLoad = vehicle.engineLoad * 0.3;
+        
+        if (vehicle.alternatorVoltage > vehicle.batteryVoltage) {
+            vehicle.batterySOC += (vehicle.alternatorVoltage - vehicle.batteryVoltage) * 0.5 * dt;
+            vehicle.batteryHealth += 0.01 * dt;
+        }
+        
+        vehicle.currentDraw = 30.0 + vehicle.engineLoad * 50.0;
+        if (headlightOn) vehicle.currentDraw += 10.0;
+        if (wiperOn) vehicle.currentDraw += 5.0;
+        if (vehicle.acOn) vehicle.currentDraw += 15.0;
+        
+    } else {
+        vehicle.batterySOC -= 0.01 * dt;
+        vehicle.alternatorVoltage = 12.6;
+        vehicle.alternatorLoad = 0;
+        vehicle.currentDraw = 5.0;
+    }
+    
+    vehicle.batteryVoltage = 12.0 + (vehicle.batterySOC / 100.0) * 2.0;
+    if (vehicle.batteryVoltage < 11.5) {
+        vehicle.batteryWarning = true;
+    }
+    
+    if (vehicle.batterySOC < 0) vehicle.batterySOC = 0;
+    if (vehicle.batterySOC > 100) vehicle.batterySOC = 100;
+    if (vehicle.batteryHealth < 0) vehicle.batteryHealth = 0;
+    if (vehicle.batteryHealth > 100) vehicle.batteryHealth = 100;
+    if (vehicle.batteryVoltage < 10) vehicle.batteryVoltage = 10;
+    if (vehicle.batteryVoltage > 15) vehicle.batteryVoltage = 15;
+    
+    // --- WEAR AND TEAR ---
+    if (engineRunning) {
+        float wearFactor = (vehicle.rpm / MAX_RPM) * 0.5 + vehicle.engineLoad * 0.5;
+        vehicle.engineHealth -= wearFactor * 0.0001 * dt * 10;
+        vehicle.engineHours += dt / 3600.0;
+        vehicle.oilQuality -= (wearFactor * 0.0002 * dt * 10);
+    }
+    
+    float shiftWear = abs(vehicle.rpm - 2000) / 2000.0 * 0.1;
+    vehicle.transmissionHealth -= shiftWear * 0.0001 * dt * 10;
+    
+    if (vehicle.speed < 10 && driveState.accelerationPedal > 0.5) {
+        vehicle.clutchWear -= 0.001 * dt * 10;
+    }
+    
+    if (vehicle.engineHealth < 0) vehicle.engineHealth = 0;
+    if (vehicle.oilQuality < 0) vehicle.oilQuality = 0;
+    if (vehicle.transmissionHealth < 0) vehicle.transmissionHealth = 0;
+    if (vehicle.clutchWear < 0) vehicle.clutchWear = 0;
+    if (vehicle.brakePadWear < 0) vehicle.brakePadWear = 0;
+    if (vehicle.brakeDiscWear < 0) vehicle.brakeDiscWear = 0;
+    
+    
+    if (!checkEngine) {
+        vehicle.checkEngineLight = 
+            vehicle.engineHealth < 30 ||
+            vehicle.oilQuality < 20 ||
+            vehicle.transmissionHealth < 30 ||
+            vehicle.brakePadWear < 10 ||
+            vehicle.tyreWearFL < 15 ||
+            vehicle.tyreWearFR < 15 ||
+            vehicle.tyreWearRL < 15 ||
+            vehicle.tyreWearRR < 15 ||
+            vehicle.oilLevel < 10;
+    }
+    
+    vehicle.serviceRequired = 
+        vehicle.engineHealth < 50 ||
+        vehicle.oilQuality < 40 ||
+        vehicle.brakePadWear < 30 ||
+        vehicle.transmissionHealth < 50 ||
+        vehicle.tyreWearFL < 40 ||
+        vehicle.tyreWearFR < 40 ||
+        vehicle.tyreWearRL < 40 ||
+        vehicle.tyreWearRR < 40 ||
+        vehicle.oilLevel < 20;
+    
+    // --- ENVIRONMENTAL ---
+    vehicle.ambientTemp = 22.0 + sin(millis() / 1000000.0 * 2 * 3.14159) * 5.0;
+    vehicle.intakeAirTemp = vehicle.ambientTemp + (vehicle.rpm / MAX_RPM) * 15.0;
+    
+    // MPU data simulation (if hardware not connected)
+    if (!mpuOK) {
+        float accelX = vehicle.acceleration / 9.81 * 100;
+        float accelY = steeringInput * 0.5 * (vehicle.speed / 100.0) * 100;
+        float accelZ = -100;
+        
+        ax = accelX;
+        ay = accelY;
+        az = accelZ;
+        gx = steeringInput * (vehicle.speed / 50.0) * 100;
+        gy = -vehicle.acceleration / 9.81 * 200;
+        gz = 0;
+        tempC = vehicle.coolantTemp;
+    }
+    
+    // GPS simulation (if hardware not connected)
+    if (!gpsValid) {
+        if (vehicle.speed > 0.5 && engineRunning) {
+            float heading = atan2(steeringInput * 0.1, 1.0);
+            float speedMS = vehicle.speed / 3.6;
+            simulatedLat += speedMS * dt * sin(heading) / 111320.0;
+            simulatedLng += speedMS * dt * cos(heading) / (111320.0 * cos(simulatedLat));
+            simulatedSpeed = vehicle.speed;
+            simulatedCourse = heading * 180 / 3.14159;
+        } else {
+            simulatedSpeed = 0;
+        }
+        
+        vehicle.latitude = simulatedLat;
+        vehicle.longitude = simulatedLng;
+        vehicle.altitude = simulatedAltitude;
+        vehicle.satellites = simulatedSatellites;
+    }
+}
+
+void updateVirtualButtons() {
+    unsigned long now = millis();
+    
+    if (now - lastHeadlightToggle > 10000) {
+        lastHeadlightToggle = now;
+        headlightOn = !headlightOn;
+        Serial.print("💡 Headlight: ");
+        Serial.println(headlightOn ? "ON" : "OFF");
+    }
+    
+    if (now - lastHornToggle > 15000) {
+        lastHornToggle = now;
+        hornActive = true;
+        hornStartTime = now;
+        hornOn = true;
+        Serial.println("📢 HORN!");
+    }
+    if (hornActive && now - hornStartTime > 1000) {
+        hornActive = false;
+        hornOn = false;
+        Serial.println("Horn OFF");
+    }
+    
+    if (now - lastWiperToggle > 8000) {
+        lastWiperToggle = now;
+        wiperOn = !wiperOn;
+        Serial.print("💧 Wiper: ");
+        Serial.println(wiperOn ? "ON" : "OFF");
+    }
+}
+
+void updateLEDs() {
+    digitalWrite(LED_GREEN, engineRunning);
+    digitalWrite(LED_WHITE, checkEngine || vehicle.checkEngineLight);
+    digitalWrite(LED_RED, driveState.brakePedal > 0.6 || vehicle.brakeWarning);
+    digitalWrite(LED_BLUE, headlightOn);
+}
+
+// ============================================================
+//                    CAN FUNCTIONS (SAME AS BEFORE)
+// ============================================================
+void sendAllDataViaCAN() {
+    if (!canStatus) return;
+    
+    Serial.println("\n📤📤📤 CAN TRANSMISSION START 📤📤📤");
+    Serial.println("========================================");
+    
+    // ---- 0x101: Engine Data ----
+    CAN.beginPacket(0x101);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.rpm >> 8 & 0xFF);
+    CAN.write((int)vehicle.rpm & 0xFF);
+    CAN.write((int)vehicle.speed & 0xFF);
+    CAN.write((int)(vehicle.engineLoad * 100) & 0xFF);
+    CAN.write(vehicle.gear & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x101", "Engine", 8, vehicle.rpm, vehicle.speed, vehicle.engineLoad, vehicle.gear);
+
+    // ---- 0x102: Engine Temperatures ----
+    CAN.beginPacket(0x102);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.coolantTemp & 0xFF);
+    CAN.write((int)vehicle.oilTemp & 0xFF);
+    CAN.write((int)vehicle.exhaustTemp >> 8 & 0xFF);
+    CAN.write((int)vehicle.exhaustTemp & 0xFF);
+    CAN.write((int)vehicle.catTemp >> 8 & 0xFF);
+    CAN.write((int)vehicle.catTemp & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x102", "Temperatures", 8, vehicle.coolantTemp, vehicle.oilTemp, vehicle.exhaustTemp, vehicle.catTemp);
+    
+    // ---- 0x103: Engine Performance ----
+    CAN.beginPacket(0x103);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.torque >> 8 & 0xFF);
+    CAN.write((int)vehicle.torque & 0xFF);
+    CAN.write((int)vehicle.horsepower >> 8 & 0xFF);
+    CAN.write((int)vehicle.horsepower & 0xFF);
+    CAN.write((int)vehicle.engineHealth & 0xFF);
+    CAN.write((int)(vehicle.engineHours * 10) & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x103", "Performance", 8, vehicle.torque, vehicle.horsepower, vehicle.engineHealth, vehicle.engineHours);
+    
+    // ---- 0x104: Throttle & Ignition ----
+    CAN.beginPacket(0x104);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write(throttlePct & 0xFF);
+    CAN.write(brakePct & 0xFF);
+    CAN.write(steeringDeg + 90 & 0xFF);
+    CAN.write((int)(vehicle.ignitionTiming * 10) & 0xFF);
+    CAN.write((int)vehicle.fuelInjectorPulse & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x104", "Throttle/Ignition", 8, throttlePct, brakePct, steeringDeg, vehicle.ignitionTiming);
+    
+    // ---- 0x105: Brake System ----
+    CAN.beginPacket(0x105);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.brakePadWear & 0xFF);
+    CAN.write((int)vehicle.brakeDiscWear & 0xFF);
+    CAN.write((int)vehicle.brakeTemp & 0xFF);
+    CAN.write((int)vehicle.brakePressure & 0xFF);
+    CAN.write((int)vehicle.brakeFluidLevel & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x105", "Brakes", 8, vehicle.brakePadWear, vehicle.brakeDiscWear, vehicle.brakeTemp, vehicle.brakePressure);
+    
+    // ---- 0x106: Tyre Pressures ----
+    CAN.beginPacket(0x106);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)(vehicle.tyrePressureFL * 10) & 0xFF);
+    CAN.write((int)(vehicle.tyrePressureFR * 10) & 0xFF);
+    CAN.write((int)(vehicle.tyrePressureRL * 10) & 0xFF);
+    CAN.write((int)(vehicle.tyrePressureRR * 10) & 0xFF);
+    CAN.endPacket();
+    logTyrePacket("0x106", "Tyre Pressures", vehicle.tyrePressureFL, vehicle.tyrePressureFR, vehicle.tyrePressureRL, vehicle.tyrePressureRR);
+    
+    // ---- 0x107: Tyre Temperatures ----
+    CAN.beginPacket(0x107);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.tyreTempFL & 0xFF);
+    CAN.write((int)vehicle.tyreTempFR & 0xFF);
+    CAN.write((int)vehicle.tyreTempRL & 0xFF);
+    CAN.write((int)vehicle.tyreTempRR & 0xFF);
+    CAN.endPacket();
+    logTyrePacket("0x107", "Tyre Temps", vehicle.tyreTempFL, vehicle.tyreTempFR, vehicle.tyreTempRL, vehicle.tyreTempRR);
+    
+    // ---- 0x108: Tyre Wear ----
+    CAN.beginPacket(0x108);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.tyreWearFL & 0xFF);
+    CAN.write((int)vehicle.tyreWearFR & 0xFF);
+    CAN.write((int)vehicle.tyreWearRL & 0xFF);
+    CAN.write((int)vehicle.tyreWearRR & 0xFF);
+    CAN.endPacket();
+    logTyrePacket("0x108", "Tyre Wear", vehicle.tyreWearFL, vehicle.tyreWearFR, vehicle.tyreWearRL, vehicle.tyreWearRR);
+    
+    // ---- 0x109: Electrical System ----
+    CAN.beginPacket(0x109);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)(vehicle.batteryVoltage * 10) & 0xFF);
+    CAN.write((int)(vehicle.alternatorVoltage * 10) & 0xFF);
+    CAN.write((int)vehicle.batterySOC & 0xFF);
+    CAN.write((int)vehicle.batteryHealth & 0xFF);
+    CAN.write((int)(vehicle.currentDraw / 10) & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x109", "Electrical", 8, vehicle.batteryVoltage, vehicle.alternatorVoltage, vehicle.batterySOC, vehicle.batteryHealth);
+    
+    // ---- 0x10A: Fuel System ----
+    CAN.beginPacket(0x10A);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)(vehicle.fuelLevel * 10) & 0xFF);
+    CAN.write((int)(vehicle.fuelConsumption * 10) & 0xFF);
+    CAN.write((int)(vehicle.fuelPressure * 10) & 0xFF);
+    CAN.write((int)(vehicle.distance * 10) & 0xFF);
+    CAN.write((int)(vehicle.maxSpeed) & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x10A", "Fuel", 8, vehicle.fuelLevel, vehicle.fuelConsumption, vehicle.fuelPressure, vehicle.distance);
+    
+    // ---- 0x10B: Fluids ----
+    CAN.beginPacket(0x10B);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.oilLevel & 0xFF);
+    CAN.write((int)vehicle.oilQuality & 0xFF);
+    CAN.write((int)vehicle.oilPressure & 0xFF);
+    CAN.write((int)vehicle.coolantLevel & 0xFF);
+    CAN.write((int)vehicle.washerFluid & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x10B", "Fluids", 8, vehicle.oilLevel, vehicle.oilQuality, vehicle.oilPressure, vehicle.coolantLevel);
+    
+    // ---- 0x10C: Diagnostics ----
+    CAN.beginPacket(0x10C);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    byte diagFlags = 0;
+    diagFlags |= (vehicle.checkEngineLight ? 1 : 0) << 0;
+    diagFlags |= (vehicle.tpmsWarning ? 1 : 0) << 1;
+    diagFlags |= (vehicle.serviceRequired ? 1 : 0) << 2;
+    diagFlags |= (vehicle.absWarning ? 1 : 0) << 3;
+    diagFlags |= (vehicle.brakeWarning ? 1 : 0) << 4;
+    diagFlags |= (vehicle.oilWarning ? 1 : 0) << 5;
+    diagFlags |= (vehicle.coolantWarning ? 1 : 0) << 6;
+    diagFlags |= (vehicle.batteryWarning ? 1 : 0) << 7;
+    CAN.write(diagFlags);
+    
+    byte diagFlags2 = 0;
+    diagFlags2 |= (vehicle.tractionControlActive ? 1 : 0) << 0;
+    diagFlags2 |= (vehicle.espActive ? 1 : 0) << 1;
+    diagFlags2 |= (engineRunning ? 1 : 0) << 2;
+    diagFlags2 |= (headlightOn ? 1 : 0) << 3;
+    diagFlags2 |= (hornOn ? 1 : 0) << 4;
+    diagFlags2 |= (wiperOn ? 1 : 0) << 5;
+    CAN.write(diagFlags2);
+    CAN.write(0);
+    CAN.endPacket();
+    logDiagnosticPacket("0x10C", "Diagnostics", diagFlags, diagFlags2);
+    
+    // ---- 0x10D: MPU6050 Data ----
+    CAN.beginPacket(0x10D);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((ax >> 8) & 0xFF);
+    CAN.write(ax & 0xFF);
+    CAN.write((ay >> 8) & 0xFF);
+    CAN.write(ay & 0xFF);
+    CAN.write((az >> 8) & 0xFF);
+    CAN.write(az & 0xFF);
+    CAN.endPacket();
+    logMPUPacket("0x10D", "MPU Accel", ax, ay, az);
+    
+    // ---- 0x10E: MPU6050 Gyro ----
+    CAN.beginPacket(0x10E);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((gx >> 8) & 0xFF);
+    CAN.write(gx & 0xFF);
+    CAN.write((gy >> 8) & 0xFF);
+    CAN.write(gy & 0xFF);
+    CAN.write((gz >> 8) & 0xFF);
+    CAN.write(gz & 0xFF);
+    CAN.endPacket();
+    logMPUPacket("0x10E", "MPU Gyro", gx, gy, gz);
+    
+    // ---- 0x10F: GPS Location ----
+    if (vehicle.speed > 0.5 || millis() % 10000 < 100) {
+        CAN.beginPacket(0x10F);
+        CAN.write(nodeId);
+        CAN.write(sendCount);
+        CAN.write((millis() / 1000) & 0xFF);
+        int32_t lat = (int32_t)(vehicle.latitude * 1000000);
+        int32_t lng = (int32_t)(vehicle.longitude * 1000000);
+        CAN.write((lat >> 24) & 0xFF);
+        CAN.write((lat >> 16) & 0xFF);
+        CAN.write((lat >> 8) & 0xFF);
+        CAN.write(lat & 0xFF);
+        CAN.write((lng >> 24) & 0xFF);
+        CAN.write((lng >> 16) & 0xFF);
+        CAN.write((lng >> 8) & 0xFF);
+        CAN.write(lng & 0xFF);
+        CAN.endPacket();
+        logGPSPacket("0x10F", "GPS Location", vehicle.latitude, vehicle.longitude);
+    }
+    
+    // ---- 0x110: GPS Details ----
+    if (vehicle.speed > 0.5 || millis() % 10000 < 100) {
+        CAN.beginPacket(0x110);
+        CAN.write(nodeId);
+        CAN.write(sendCount);
+        CAN.write((millis() / 1000) & 0xFF);
+        CAN.write((int)(vehicle.altitude * 10) & 0xFF);
+        CAN.write((int)(vehicle.altitude * 10) >> 8 & 0xFF);
+        CAN.write(vehicle.satellites & 0xFF);
+        CAN.write((int)(vehicle.avgSpeed * 10) & 0xFF);
+        CAN.write((int)(vehicle.tripDistance * 10) & 0xFF);
+        CAN.write((int)(vehicle.tripTime * 100) & 0xFF);
+        CAN.endPacket();
+        logGPSDetailsPacket("0x110", "GPS Details", vehicle.altitude, vehicle.satellites, vehicle.avgSpeed, vehicle.tripDistance);
+    }
+    
+    // ---- 0x111: Mode & Status ----
+    CAN.beginPacket(0x111);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write(modeIndex & 0xFF);
+    CAN.write(pressCount & 0xFF);
+    CAN.write(vehicle.gear & 0xFF);
+    CAN.write((int)vehicle.driveShaftSpeed & 0xFF);
+    CAN.write((int)vehicle.engineHours & 0xFF);
+    CAN.endPacket();
+    logCANPacket("0x111", "Mode/Status", 8, modeIndex, pressCount, vehicle.gear, vehicle.driveShaftSpeed);
+    
+    // ---- 0x112: Transmission ----
+    CAN.beginPacket(0x112);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write((int)vehicle.clutchWear & 0xFF);
+    CAN.write((int)vehicle.transmissionHealth & 0xFF);
+    CAN.write(0);
+    CAN.write(0);
+    CAN.write(0);
+    CAN.endPacket();
+    logCANPacket("0x112", "Transmission", 8, vehicle.clutchWear, vehicle.transmissionHealth, 0, 0);
+    
+    // ---- 0x113: Cabin Comfort ----
+    CAN.beginPacket(0x113);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write(vehicle.acOn ? 1 : 0);
+    CAN.write(vehicle.heaterOn ? 1 : 0);
+    CAN.write((int)vehicle.cabinTemp & 0xFF);
+    CAN.write((int)(vehicle.fanSpeed * 10) & 0xFF);
+    CAN.write(0);
+    CAN.endPacket();
+    logCANPacket("0x113", "Cabin", 8, vehicle.acOn, vehicle.heaterOn, vehicle.cabinTemp, vehicle.fanSpeed);
+    
+    // ---- 0x114: Comprehensive Status (Heartbeat) ----
+    CAN.beginPacket(0x114);
+    CAN.write(nodeId);
+    CAN.write(sendCount);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write(0xAA);
+    CAN.write(0x55);
+    CAN.write(sendCount & 0xFF);
+    CAN.write((millis() / 1000) & 0xFF);
+    CAN.write(vehicle.gear & 0xFF);
+    CAN.write(engineRunning ? 1 : 0);
+    CAN.endPacket();
+    logHeartbeatPacket("0x114", "Heartbeat");
+    
+    sendCount++;
+    Serial.println("========================================");
+    Serial.println("📤📤📤 CAN TRANSMISSION COMPLETE 📤📤📤\n");
+}
+
+// ============================================================
+//                    CAN LOGGING FUNCTIONS
+// ============================================================
+void logCANPacket(String id, String name, int len, float v1, float v2, float v3, float v4) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: ");
+    Serial.print(v1, 1);
+    Serial.print(", ");
+    Serial.print(v2, 1);
+    Serial.print(", ");
+    Serial.print(v3, 1);
+    Serial.print(", ");
+    Serial.println(v4, 1);
+}
+
+void logTyrePacket(String id, String name, float fl, float fr, float rl, float rr) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: FL=");
+    Serial.print(fl, 1);
+    Serial.print(" FR=");
+    Serial.print(fr, 1);
+    Serial.print(" RL=");
+    Serial.print(rl, 1);
+    Serial.print(" RR=");
+    Serial.println(rr, 1);
+}
+
+void logMPUPacket(String id, String name, int16_t x, int16_t y, int16_t z) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: X=");
+    Serial.print(x);
+    Serial.print(" Y=");
+    Serial.print(y);
+    Serial.print(" Z=");
+    Serial.println(z);
+}
+
+void logDiagnosticPacket(String id, String name, byte flags1, byte flags2) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: ");
+    Serial.print("CheckEng=");
+    Serial.print((flags1 & 0x01) ? "⚠️ON " : "✅OFF");
+    Serial.print(" TPMS=");
+    Serial.print((flags1 & 0x02) ? "⚠️WARN" : "✅OK  ");
+    Serial.print(" Service=");
+    Serial.print((flags1 & 0x04) ? "⚠️REQ " : "✅OK  ");
+    Serial.print(" ABS=");
+    Serial.print((flags1 & 0x08) ? "⚠️WARN" : "✅OK  ");
+    Serial.print(" Brake=");
+    Serial.print((flags1 & 0x10) ? "⚠️WARN" : "✅OK  ");
+    Serial.print(" Oil=");
+    Serial.print((flags1 & 0x20) ? "⚠️WARN" : "✅OK  ");
+    Serial.print(" Coolant=");
+    Serial.print((flags1 & 0x40) ? "⚠️WARN" : "✅OK  ");
+    Serial.print(" Battery=");
+    Serial.println((flags1 & 0x80) ? "⚠️WARN" : "✅OK  ");
+    
+    Serial.print("           ");
+    Serial.print("Traction=");
+    Serial.print((flags2 & 0x01) ? "🔄ON " : "OFF");
+    Serial.print(" ESP=");
+    Serial.print((flags2 & 0x02) ? "🔄ON " : "OFF");
+    Serial.print(" Engine=");
+    Serial.print((flags2 & 0x04) ? "🏁RUN " : "⏹STOP");
+    Serial.print(" Lights=");
+    Serial.print((flags2 & 0x08) ? "💡ON " : "OFF");
+    Serial.print(" Horn=");
+    Serial.print((flags2 & 0x10) ? "📢ON " : "OFF");
+    Serial.print(" Wiper=");
+    Serial.println((flags2 & 0x20) ? "💧ON " : "OFF");
+}
+
+void logGPSPacket(String id, String name, double lat, double lng) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: ");
+    Serial.print("Lat=");
+    Serial.print(lat, 6);
+    Serial.print(" Lng=");
+    Serial.print(lng, 6);
+    Serial.print(" | Status: ");
+    Serial.println(gpsValid ? "✅ REAL GPS" : "🔄 SIMULATED");
+}
+
+void logGPSDetailsPacket(String id, String name, float alt, int sats, float avgSpeed, float tripDist) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: ");
+    Serial.print("Alt=");
+    Serial.print(alt, 1);
+    Serial.print("m Sats=");
+    Serial.print(sats);
+    Serial.print(" AvgSpd=");
+    Serial.print(avgSpeed, 1);
+    Serial.print("km/h TripDist=");
+    Serial.print(tripDist, 1);
+    Serial.print("km TripTime=");
+    Serial.print(vehicle.tripTime * 60, 1);
+    Serial.println("min");
+}
+
+void logHeartbeatPacket(String id, String name) {
+    if (!verboseCAN) return;
+    Serial.print("  📤 ");
+    Serial.print(id);
+    Serial.print(" [");
+    Serial.print(name);
+    Serial.print("]: ");
+    Serial.print("0xAA 0x55 | Count=");
+    Serial.print(sendCount);
+    Serial.print(" | Time=");
+    Serial.print(millis() / 1000);
+    Serial.print("s | Gear=");
+    Serial.print(vehicle.gear);
+    Serial.print(" | Engine=");
+    Serial.println(engineRunning ? "🏁RUN" : "⏹STOP");
+}
+
+void receiveCANData() {
+    int packetSize = CAN.parsePacket();
+    
+    if (packetSize) {
+        byte data[8];
+        int i = 0;
+        while (CAN.available() && i < 8) {
+            data[i++] = CAN.read();
+        }
+        
+        if (i >= 3) {
+            receiveCount++;
+            Serial.print("📥 CAN RX #");
+            Serial.print(receiveCount);
+            Serial.print(" | ID:0x");
+            Serial.print(CAN.packetId(), HEX);
+            Serial.print(" | From Node: ");
+            Serial.print(data[0]);
+            Serial.print(" | Msg: ");
+            Serial.print(data[1]);
+            if (i > 3) {
+                Serial.print(" | Data: ");
+                for(int j=3; j<i; j++) {
+                    Serial.print(data[j], HEX);
+                    Serial.print(" ");
+                }
+            }
+            Serial.println();
+        }
+    }
+}
+
+// ============================================================
+//                    PRINT REALISTIC DATA (DETAILED)
+// ============================================================
+void printRealisticData() {
+    static int printCount = 0;
+    
+    if (printCount % 1 == 0) {
+        Serial.println("\n╔════════════════════════════════════════════════════════════╗");
+        Serial.println("║              REALISTIC VEHICLE DATA                      ║");
+        Serial.println("╚════════════════════════════════════════════════════════════╝");
+        
+        // ─── ENGINE ───
+        Serial.println("\n┌─── 🔥 ENGINE ─────────────────────────────────────────────┐");
+        Serial.print("│ RPM: "); Serial.print(vehicle.rpm, 0);
+        Serial.print(" rpm | Speed: "); Serial.print(vehicle.speed, 1); Serial.print(" km/h");
+        Serial.print(" | Gear: "); Serial.println(vehicle.gear);
+        Serial.print("│ Load: "); Serial.print(vehicle.engineLoad * 100, 1); Serial.print("%");
+        Serial.print(" | Torque: "); Serial.print(vehicle.torque, 1); Serial.print(" Nm");
+        Serial.print(" | HP: "); Serial.print(vehicle.horsepower, 1); Serial.println(" HP");
+        Serial.print("│ Throttle: "); Serial.print(driveState.throttleResponse * 100, 1); Serial.print("%");
+        Serial.print(" | MAF: "); Serial.print(vehicle.massAirFlow, 1); Serial.print(" g/s");
+        Serial.print(" | Injector: "); Serial.print(vehicle.fuelInjectorPulse, 1); Serial.println(" ms");
+        Serial.print("│ Ignition: "); Serial.print(vehicle.ignitionTiming, 1); Serial.print("°");
+        Serial.print(" | Health: "); Serial.print(vehicle.engineHealth, 1); Serial.print("%");
+        Serial.print(" | Hours: "); Serial.print(vehicle.engineHours, 1); Serial.println(" h");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── TEMPERATURES ───
+        Serial.println("\n┌─── 🌡️ TEMPERATURES ──────────────────────────────────────┐");
+        Serial.print("│ Coolant: "); Serial.print(vehicle.coolantTemp, 1); Serial.print("°C");
+        Serial.print(" | Oil: "); Serial.print(vehicle.oilTemp, 1); Serial.print("°C");
+        Serial.print(" | Intake: "); Serial.print(vehicle.intakeAirTemp, 1); Serial.print("°C");
+        Serial.print(" | Ambient: "); Serial.print(vehicle.ambientTemp, 1); Serial.println("°C");
+        Serial.print("│ Exhaust: "); Serial.print(vehicle.exhaustTemp, 0); Serial.print("°C");
+        Serial.print(" | CAT: "); Serial.print(vehicle.catTemp, 0); Serial.print("°C");
+        Serial.print(" | Brake: "); Serial.print(vehicle.brakeTemp, 1); Serial.println("°C");
+        Serial.print("│ Tyres - FL:"); Serial.print(vehicle.tyreTempFL, 1); Serial.print("°C");
+        Serial.print(" FR:"); Serial.print(vehicle.tyreTempFR, 1); Serial.print("°C");
+        Serial.print(" RL:"); Serial.print(vehicle.tyreTempRL, 1); Serial.print("°C");
+        Serial.print(" RR:"); Serial.print(vehicle.tyreTempRR, 1); Serial.println("°C");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── TYRES ───
+        Serial.println("\n┌─── 🏁 TYRES ──────────────────────────────────────────────┐");
+        Serial.print("│ Pressures - FL:"); Serial.print(vehicle.tyrePressureFL, 1); Serial.print(" PSI");
+        Serial.print(" FR:"); Serial.print(vehicle.tyrePressureFR, 1); Serial.print(" PSI");
+        Serial.print(" RL:"); Serial.print(vehicle.tyrePressureRL, 1); Serial.print(" PSI");
+        Serial.print(" RR:"); Serial.print(vehicle.tyrePressureRR, 1); Serial.println(" PSI");
+        Serial.print("│ Wear - FL:"); Serial.print(vehicle.tyreWearFL, 1); Serial.print("%");
+        Serial.print(" FR:"); Serial.print(vehicle.tyreWearFR, 1); Serial.print("%");
+        Serial.print(" RL:"); Serial.print(vehicle.tyreWearRL, 1); Serial.print("%");
+        Serial.print(" RR:"); Serial.print(vehicle.tyreWearRR, 1); Serial.println("%");
+        Serial.print("│ Grip - FL:"); Serial.print(vehicle.tyreGripFL, 1); Serial.print("%");
+        Serial.print(" FR:"); Serial.print(vehicle.tyreGripFR, 1); Serial.print("%");
+        Serial.print(" RL:"); Serial.print(vehicle.tyreGripRL, 1); Serial.print("%");
+        Serial.print(" RR:"); Serial.print(vehicle.tyreGripRR, 1); Serial.println("%");
+        Serial.print("│ TPMS Warning: "); Serial.println(vehicle.tpmsWarning ? "⚠️ ACTIVE" : "✅ OK");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── BRAKES ───
+        Serial.println("\n┌─── 🛑 BRAKES ─────────────────────────────────────────────┐");
+        Serial.print("│ Pad Wear: "); Serial.print(vehicle.brakePadWear, 1); Serial.print("%");
+        Serial.print(" | Disc Wear: "); Serial.print(vehicle.brakeDiscWear, 1); Serial.print("%");
+        Serial.print(" | Fluid: "); Serial.print(vehicle.brakeFluidLevel, 1); Serial.println("%");
+        Serial.print("│ Pressure: "); Serial.print(vehicle.brakePressure, 1); Serial.print("%");
+        Serial.print(" | Temp: "); Serial.print(vehicle.brakeTemp, 1); Serial.print("°C");
+        Serial.print(" | Distance: "); Serial.print(vehicle.brakeDistance, 1); Serial.println("m");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── ELECTRICAL ───
+        Serial.println("\n┌─── ⚡ ELECTRICAL ─────────────────────────────────────────┐");
+        Serial.print("│ Battery: "); Serial.print(vehicle.batteryVoltage, 2); Serial.print("V");
+        Serial.print(" | Alternator: "); Serial.print(vehicle.alternatorVoltage, 2); Serial.print("V");
+        Serial.print(" | SOC: "); Serial.print(vehicle.batterySOC, 1); Serial.println("%");
+        Serial.print("│ Health: "); Serial.print(vehicle.batteryHealth, 1); Serial.print("%");
+        Serial.print(" | Temp: "); Serial.print(vehicle.batteryTemp, 1); Serial.print("°C");
+        Serial.print(" | Current: "); Serial.print(vehicle.currentDraw, 1); Serial.println("A");
+        Serial.print("│ Alternator Load: "); Serial.print(vehicle.alternatorLoad * 100, 1); Serial.println("%");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── FUEL ───
+        Serial.println("\n┌─── ⛽ FUEL ───────────────────────────────────────────────┐");
+        Serial.print("│ Level: "); Serial.print(vehicle.fuelLevel, 1); Serial.print("L (");
+        Serial.print((vehicle.fuelLevel / FUEL_TANK_CAPACITY) * 100, 1); Serial.print("%)");
+        Serial.print(" | Consumption: "); Serial.print(vehicle.fuelConsumption, 1); Serial.println(" L/100km");
+        Serial.print("│ Pressure: "); Serial.print(vehicle.fuelPressure, 1); Serial.print(" bar");
+        Serial.print(" | Temp: "); Serial.print(vehicle.fuelTemp, 1); Serial.print("°C");
+        Serial.print(" | Distance: "); Serial.print(vehicle.distance, 1); Serial.println(" km");
+        Serial.print("│ Max Speed: "); Serial.print(vehicle.maxSpeed, 1); Serial.print(" km/h");
+        Serial.print(" | Avg Speed: "); Serial.print(vehicle.avgSpeed, 1); Serial.print(" km/h");
+        Serial.print(" | Trip: "); Serial.print(vehicle.tripDistance, 1); Serial.println(" km");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── FLUIDS ───
+        Serial.println("\n┌─── 💧 FLUIDS ─────────────────────────────────────────────┐");
+        Serial.print("│ Oil Level: "); Serial.print(vehicle.oilLevel, 1); Serial.print("%");
+        Serial.print(" | Oil Quality: "); Serial.print(vehicle.oilQuality, 1); Serial.print("%");
+        Serial.print(" | Oil Pressure: "); Serial.print(vehicle.oilPressure, 1); Serial.println(" PSI");
+        Serial.print("│ Coolant Level: "); Serial.print(vehicle.coolantLevel, 1); Serial.print("%");
+        Serial.print(" | Washer Fluid: "); Serial.print(vehicle.washerFluid, 1); Serial.print("%");
+        Serial.print(" | PS Fluid: "); Serial.print(vehicle.powerSteeringFluid, 1); Serial.println("%");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── DIAGNOSTICS ───
+        Serial.println("\n┌─── 🔧 DIAGNOSTICS ───────────────────────────────────────┐");
+        Serial.print("│ Check Engine: "); Serial.print(vehicle.checkEngineLight ? "⚠️ ON" : "✅ OK");
+        Serial.print(" | Service: "); Serial.print(vehicle.serviceRequired ? "⚠️ REQ" : "✅ OK");
+        Serial.print(" | ABS: "); Serial.println(vehicle.absWarning ? "⚠️ WARN" : "✅ OK");
+        Serial.print("│ Traction Control: "); Serial.print(vehicle.tractionControlActive ? "🔄 ACTIVE" : "✅ OFF");
+        Serial.print(" | ESP: "); Serial.print(vehicle.espActive ? "🔄 ACTIVE" : "✅ OFF");
+        Serial.print(" | Brake Warning: "); Serial.println(vehicle.brakeWarning ? "⚠️ WARN" : "✅ OK");
+        Serial.print("│ Oil Warning: "); Serial.print(vehicle.oilWarning ? "⚠️ WARN" : "✅ OK");
+        Serial.print(" | Coolant Warning: "); Serial.print(vehicle.coolantWarning ? "⚠️ WARN" : "✅ OK");
+        Serial.print(" | Battery Warning: "); Serial.println(vehicle.batteryWarning ? "⚠️ WARN" : "✅ OK");
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        // ─── GPS ───
+        Serial.println("\n┌─── 📡 GPS ───────────────────────────────────────────────┐");
+        Serial.print("│ Status: "); Serial.println(gpsValid ? "✅ REAL GPS FIX" : "🔄 SIMULATED");
+        Serial.print("│ Latitude: "); Serial.print(vehicle.latitude, 6);
+        Serial.print(" | Longitude: "); Serial.println(vehicle.longitude, 6);
+        Serial.print("│ Altitude: "); Serial.print(vehicle.altitude, 1); Serial.print("m");
+        Serial.print(" | Satellites: "); Serial.print(vehicle.satellites);
+        if (gpsValid) {
+            Serial.print(" | Speed: "); Serial.print(simulatedSpeed, 1); Serial.print(" km/h");
+            Serial.print(" | Course: "); Serial.print(simulatedCourse, 1); Serial.println("°");
+        } else {
+            Serial.println();
+        }
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+     // ─── CONTROLS & LED STATUS ───
+Serial.println("\n┌─── 🎮 CONTROLS & LED STATUS ───────────────────────────┐");
+Serial.print("│ Ignition: "); Serial.print(engineRunning ? "🏁 ON" : "⏹ OFF");
+Serial.print(" | Mode: "); Serial.print(currentMode);
+Serial.print(" | Gear: "); Serial.println(vehicle.gear);
+Serial.println("│");
+Serial.println("│ ─── POTENTIOMETERS ───");
+Serial.print("│ Throttle: "); Serial.print(throttlePct); Serial.print("%");
+Serial.print("   | Brake: "); Serial.print(brakePct); Serial.print("%");
+Serial.print("   | Steering: "); Serial.print(steeringDeg); Serial.println("°");
+Serial.println("│");
+Serial.println("│ ─── LED STATUS ───");
+Serial.print("│ LED_GREEN (Engine): "); Serial.print(engineRunning ? "🟢 ON" : "⚫ OFF");
+Serial.print("   | LED_WHITE (Check Eng): "); Serial.print((checkEngine || vehicle.checkEngineLight) ? "⚪ ON" : "⚫ OFF");
+Serial.println();
+Serial.print("│ LED_RED (Brake): "); Serial.print((driveState.brakePedal > 0.6 || vehicle.brakeWarning) ? "🔴 ON" : "⚫ OFF");
+Serial.print("   | LED_BLUE (Headlight): "); Serial.print(headlightOn ? "🔵 ON" : "⚫ OFF");
+Serial.println();
+Serial.println("│");
+Serial.println("│ ─── VIRTUAL BUTTONS ───");
+Serial.print("│ Headlight: "); Serial.print(headlightOn ? "💡 ON" : "OFF");
+Serial.print("   | Horn: "); Serial.print(hornOn ? "📢 ON" : "OFF");
+Serial.print("   | Wiper: "); Serial.println(wiperOn ? "💧 ON" : "OFF");
+Serial.println("└────────────────────────────────────────────────────────────┘");
+        // ─── CAN ───
+        Serial.println("\n┌─── 📤 CAN STATUS ────────────────────────────────────────┐");
+        Serial.print("│ Status: "); Serial.print(canStatus ? "✅ CONNECTED" : "❌ DISCONNECTED");
+        Serial.print(" | Sent: "); Serial.print(sendCount);
+        Serial.print(" | Received: "); Serial.println(receiveCount);
+        if (canStatus) {
+            Serial.print("│ Last Send: "); Serial.print((millis() - lastCANsend) / 1000); Serial.print("s ago");
+            Serial.print(" | Rate: "); Serial.print(sendCount / ((millis() / 1000) > 0 ? (millis() / 1000) : 1)); Serial.println(" pkt/s");
+        }
+        Serial.println("└────────────────────────────────────────────────────────────┘");
+        
+        Serial.println("\n════════════════════════════════════════════════════════════\n");
+    }
+    printCount++;
+}
