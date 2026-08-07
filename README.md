@@ -1,13 +1,11 @@
 # 🚗 VehicleGuard Pro
 ### Smart Telematics & Diagnostic Assistant with AI-Powered Health Analytics
 
-https://img.shields.io/badge/License-MIT-green.svg
-https://img.shields.io/badge/Platform-ESP32-blue
-https://img.shields.io/badge/Communication-CAN%2520Bus-orange
-https://img.shields.io/badge/IoT-MQTT-success
-https://img.shields.io/badge/Project-Completed-brightgreen
-https://img.shields.io/badge/AI-Health%2520Analytics-red
-https://img.shields.io/badge/Digital%2520Twin-Enabled-purple
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Platform](https://img.shields.io/badge/Platform-ESP32-blue)
+![Protocol](https://img.shields.io/badge/Communication-CAN%20Bus-orange)
+![IoT](https://img.shields.io/badge/IoT-MQTT-success)
+![Status](https://img.shields.io/badge/Project-Completed-brightgreen)
 ---
 
 ## 📖 Overview
