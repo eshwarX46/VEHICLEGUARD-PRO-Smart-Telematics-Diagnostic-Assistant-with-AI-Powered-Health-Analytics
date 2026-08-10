@@ -1,6 +1,57 @@
-// esp32_complete_data_collector.ino
-// ESP32 - REALISTIC VEHICLE SIMULATOR WITH CAN TRANSMISSION
-// All data is simulated except specified hardware pins
+/**
+ * @file esp32_complete_data_collector.ino
+ * @brief ESP32 - Realistic Vehicle Simulator with CAN Transmission
+ * 
+ * This code implements a comprehensive vehicle data simulator on ESP32
+ * that generates realistic vehicle parameters and transmits them over CAN bus.
+ * 
+ * ## Features
+ * - Realistic engine simulation with RPM, torque, horsepower
+ * - Complete vehicle dynamics (speed, acceleration, braking)
+ * - 12+ CAN message types for comprehensive data
+ * - Hardware support for: GPS, MPU6050, potentiometers, buttons, LEDs
+ * - Full fault injection and diagnostic system
+ * - Tyre pressure, temperature, and wear simulation
+ * - Fuel consumption and range calculation
+ * - Electrical system simulation
+ * - Automatic gear selection
+ * - Virtual button simulation (headlights, horn, wipers)
+ * - Verbose CAN logging for debugging
+ * 
+ * ## Hardware Requirements
+ * - ESP32 Development Board
+ * - CAN transceiver (MCP2551 or similar)
+ * - Optional: MPU6050 (I2C)
+ * - Optional: GPS module (NMEA)
+ * - 3x Potentiometers (Throttle, Brake, Steering)
+ * - 4x Push buttons (Ignition, Mode, Failure, Clear)
+ * - 4x LEDs (Green, White, Red, Blue)
+ * 
+ * ## CAN Message IDs (0x100-0x114)
+ * - 0x101: Engine Data (RPM, Speed, Load, Gear)
+ * - 0x102: Engine Temperatures
+ * - 0x103: Engine Performance (Torque, HP, Health)
+ * - 0x104: Throttle & Ignition
+ * - 0x105: Brake System
+ * - 0x106: Tyre Pressures
+ * - 0x107: Tyre Temperatures
+ * - 0x108: Tyre Wear
+ * - 0x109: Electrical System
+ * - 0x10A: Fuel System
+ * - 0x10B: Fluids
+ * - 0x10C: Diagnostics
+ * - 0x10D: MPU6050 Accel
+ * - 0x10E: MPU6050 Gyro
+ * - 0x10F: GPS Location
+ * - 0x110: GPS Details
+ * - 0x111: Mode & Status
+ * - 0x112: Transmission
+ * - 0x113: Cabin Comfort
+ * - 0x114: Heartbeat
+ * 
+ * @author Vehicle Simulator Project
+ */
+
 
 #include <TinyGPS++.h>
 #include <Wire.h>
