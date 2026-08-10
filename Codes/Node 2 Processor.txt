@@ -1,7 +1,56 @@
-// ESP32_Node4_Receiver.ino
-// ESP32 - NODE 4 (RECEIVER) - Receives ALL vehicle data via CAN
-// With LCD Display, Rotary Encoder, AI Predictions, WiFi, Web Dashboard, MQTT & Digital Twin
-// PLUS: Transmits processed data to NodeMCU via CAN for Bluetooth
+/**
+ * @file ESP32_Node4_Receiver.ino
+ * @brief ESP32 CAN Node 2 - Complete Vehicle Data Receiver with AI, Web, and Digital Twin
+ * 
+ * This code implements an ESP32-based CAN receiver that collects vehicle data,
+ * processes it with AI predictions, and provides multiple interfaces for monitoring.
+ * 
+ * ## Features
+ * - CAN bus communication at 250KBPS (Receiver + Transmitter)
+ * - LCD Display with 16x2 character display
+ * - Rotary encoder for page navigation (13 pages)
+ * - AI Health Prediction Engine
+ * - WiFi Web Dashboard with auto-refresh
+ * - Digital Twin - Live 3D vehicle visualization page
+ * - MQTT Cloud Upload
+ * - Buzzer alerts for critical conditions
+ * - Historical data storage
+ * - CAN transmission to NodeMCU
+ * - Comprehensive serial debugging
+ * 
+ * ## Hardware Requirements
+ * - ESP32 Development Board
+ * - CAN transceiver (MCP2551 or similar)
+ * - 16x2 I2C LCD (0x27 address)
+ * - Rotary encoder with push button
+ * - Active buzzer
+ * 
+ * ## CAN Message IDs
+ * - 0x101: Engine Data
+ * - 0x102: Engine Temperatures
+ * - 0x103: Engine Performance
+ * - 0x104: Throttle & Ignition
+ * - 0x105: Brake System
+ * - 0x106: Tyre Pressures
+ * - 0x107: Tyre Temperatures
+ * - 0x108: Tyre Wear
+ * - 0x109: Electrical System
+ * - 0x10A: Fuel System
+ * - 0x10B: Fluids
+ * - 0x10C: Diagnostics
+ * - 0x10D: MPU6050 Accel
+ * - 0x10E: MPU6050 Gyro
+ * - 0x10F: GPS Location
+ * - 0x110: GPS Details
+ * - 0x111: Mode & Status
+ * - 0x112: Transmission
+ * - 0x113: Cabin Comfort
+ * - 0x114: Heartbeat
+ * - 0x115: AI Health Data (Transmit to NodeMCU)
+ * - 0x116: Alert Data (Transmit to NodeMCU)
+ * 
+ * @author CAN Node Project
+ */
 
 #include <CAN.h>
 #include <Wire.h>
