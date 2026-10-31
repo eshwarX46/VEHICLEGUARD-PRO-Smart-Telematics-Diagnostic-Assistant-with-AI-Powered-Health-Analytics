@@ -1,5 +1,6 @@
 # 🚗 VehicleGuard Pro
-### Smart Telematics & Diagnostic Assistant with AI-Powered Health Analytics
+
+**Smart Telematics & Diagnostic Assistant with AI-Powered Health Analytics**
 
 ![Platform](https://img.shields.io/badge/Platform-ESP32-blue)
 ![Protocol](https://img.shields.io/badge/Communication-CAN%20Bus-orange)
@@ -10,172 +11,137 @@
 
 ## 📖 Overview
 
-**VehicleGuard Pro** is a next-generation IoT-based vehicle monitoring and diagnostic system that combines **CAN Bus communication**, **Artificial Intelligence**, **Digital Twin technology**, **Cloud Connectivity**, and **Real-time Analytics** to monitor vehicle health.
+**VehicleGuard Pro** is an IoT-based vehicle monitoring and diagnostic system that combines **CAN bus communication**, **rule-based health analytics**, **Digital Twin technology**, **cloud connectivity**, and **real-time analytics** to monitor vehicle health.
 
-The project simulates and monitors more than **50+ vehicle parameters**, predicts component health using AI algorithms, detects anomalies in real time, and displays information across multiple platforms including a Web Dashboard, LCD Display, Mobile Application, and Digital Twin interface.
+The project simulates and monitors **50+ vehicle parameters**, estimates component health using rule-based algorithms, detects abnormal conditions, and displays information through a web dashboard, LCD, mobile application, and Digital Twin interface.
 
----
 ## 📸 Project Image
-<img width="4080" height="3072" alt="image 20" src="https://github.com/user-attachments/assets/29c0f0d0-8cba-416e-8ff3-876fb9de9203" />
 
+<img src="https://github.com/user-attachments/assets/29c0f0d0-8cba-416e-8ff3-876fb9de9203" alt="VehicleGuard Pro hardware prototype" width="900" />
 
----
 ## ✨ Features
 
-- 🚘 Real-Time Vehicle Telemetry
-- 🤖 AI-Based Vehicle Health Prediction
-- 🔍 Predictive Maintenance
-- 📡 CAN Bus Communication (250 kbps)
-- 🌐 Live Web Dashboard
-- 📱 Mobile Application
-- 🖥 Digital Twin Visualization
-- 📟 LCD Display Interface
-- ☁ MQTT Cloud Connectivity
-- 📍 GPS Tracking
-- 📊 Health Analytics
-- ⚠ Intelligent Fault Detection
-- 🔔 Real-Time Alerts & Notifications
+- 🚘 Real-time vehicle telemetry
+- 🤖 Rule-based vehicle health analysis
+- 🔍 Predictive maintenance support
+- 📡 CAN bus communication at 250 kbps
+- 🌐 Live web dashboard
+- 📱 Mobile application
+- 🖥 Digital Twin visualization
+- 📟 LCD interface
+- ☁ MQTT cloud connectivity
+- 📍 GPS tracking
+- 📊 Health analytics
+- ⚠ Fault detection
+- 🔔 Real-time alerts and notifications
 
----
+## System Architecture
 
-# System Architecture
-
-```
-                  Vehicle Simulator (ESP32)
-                           │
-                   MCP2515 CAN Bus
-                           │
-         ┌─────────────────┴─────────────────┐
-         │                                   │
- AI Processing ESP32                 NodeMCU ESP8266
-         │                                   │
-         │                            Bluetooth HC-05
-         │                                   │
-         │                             Mobile App
-         │
- ┌──────────────┬──────────────┬─────────────┐
- │              │              │             │
-LCD Display  Web Dashboard  Digital Twin   MQTT Cloud
+```mermaid
+flowchart TD
+    simulator["Vehicle simulator: ESP32"] --- bus["CAN bus"]
+    bus --- processor["Health processing: ESP32"]
+    bus --- gateway["Mobile gateway: NodeMCU ESP8266"]
+    gateway --> bluetooth["HC-05 Bluetooth"]
+    bluetooth --> app["Mobile application"]
+    processor --> lcd["LCD display"]
+    processor --> web["Web dashboard"]
+    processor --> twin["Digital Twin"]
+    processor --> cloud["MQTT cloud"]
 ```
 
----
+## Project Highlights
 
-# Project Highlights
+- **50+** vehicle parameters
+- **22** CAN message IDs
+- Rule-based health analytics
+- Digital Twin visualization
+- GPS integration
+- Bluetooth mobile application
+- MQTT cloud monitoring
+- Web dashboard and LCD interface
+- Real-time alerts
 
-✔ 50+ Vehicle Parameters
-
-✔ 22 CAN Message IDs
-
-✔ AI Health Prediction
-
-✔ Digital Twin
-
-✔ GPS Integration
-
-✔ Bluetooth Mobile App
-
-✔ MQTT Cloud Monitoring
-
-✔ Web Dashboard
-
-✔ LCD Interface
-
-✔ Real-Time Alerts
-
----
-
-# Hardware Used
+## Hardware Used
 
 | Component | Quantity |
-|------------|----------|
-| ESP32 Development Board | 2 |
+| --- | ---: |
+| ESP32 development board | 2 |
 | NodeMCU ESP8266 | 1 |
-| MCP2515 CAN Module | 1 |
-| TJA1050 CAN Transceiver | 2 |
-| HC-05 Bluetooth Module | 1 |
-| MPU6050 Sensor | 1 |
-| NEO-6M GPS Module | 1 |
-| 16x2 I2C LCD | 1 |
-| Rotary Encoder | 1 |
-| Push Buttons | 4 |
+| MCP2515 CAN module | 1 |
+| TJA1050 CAN transceiver | 2 |
+| HC-05 Bluetooth module | 1 |
+| MPU6050 sensor | 1 |
+| NEO-6M GPS module | 1 |
+| 16 × 2 I²C LCD | 1 |
+| Rotary encoder | 1 |
+| Push buttons | 4 |
 | Potentiometers | 3 |
 | LEDs | 5 |
 | Buzzer | 1 |
 
----
-
-# Software & Technologies
+## Software and Technologies
 
 - Arduino IDE
-- ESP32 Framework
-- ESP8266 Framework
-- HTML
-- CSS
-- JavaScript
+- ESP32 and ESP8266 frameworks
+- HTML, CSS, and JavaScript
 - MQTT
-- CAN Protocol
+- CAN protocol
 - JSON
-- Digital Twin
-- AI Rule-Based Health Analytics
+- Digital Twin visualization
+- Rule-based health analytics
 
----
+## Communication Technologies
 
-# Communication Technologies
+| Technology | Interface or protocol |
+| --- | --- |
+| CAN | CAN 2.0B |
+| Serial and peripheral interfaces | UART, SPI, I²C |
+| Wireless connectivity | Bluetooth, Wi-Fi |
+| Messaging | MQTT |
 
-- CAN 2.0B
-- UART
-- SPI
-- I2C
-- Bluetooth
-- WiFi
-- MQTT
+## Health Monitoring
 
----
-
-# AI Health Monitoring
-
-VehicleGuard Pro predicts the health of
+VehicleGuard Pro analyzes vehicle parameters to estimate the health of:
 
 - Engine
 - Battery
 - Brakes
-- Engine Oil
-- Overall Vehicle Health
+- Engine oil
+- Overall vehicle system
 
-The AI engine continuously analyzes sensor values and generates intelligent alerts for abnormal conditions.
+The rule-based analytics engine evaluates incoming values and generates alerts for abnormal conditions.
 
----
-
-# Parameters Monitored
+## Parameters Monitored
 
 ### Engine
 
 - RPM
-- Engine Load
+- Engine load
 - Horsepower
 - Torque
-- Engine Hours
+- Engine hours
 
 ### Temperature
 
-- Coolant Temperature
-- Oil Temperature
-- Exhaust Temperature
-- Catalytic Converter Temperature
+- Coolant temperature
+- Oil temperature
+- Exhaust temperature
+- Catalytic converter temperature
 
 ### Electrical
 
-- Battery Voltage
-- Alternator Voltage
-- Battery Health
-- State of Charge
+- Battery voltage
+- Alternator voltage
+- Battery health
+- State of charge
 
 ### Brake System
 
-- Brake Pad Wear
-- Brake Fluid
-- Brake Pressure
-- Brake Temperature
+- Brake pad wear
+- Brake fluid
+- Brake pressure
+- Brake temperature
 
 ### Tyres
 
@@ -185,9 +151,9 @@ The AI engine continuously analyzes sensor values and generates intelligent aler
 
 ### Fuel
 
-- Fuel Level
-- Fuel Consumption
-- Fuel Pressure
+- Fuel level
+- Fuel consumption
+- Fuel pressure
 
 ### GPS
 
@@ -195,95 +161,64 @@ The AI engine continuously analyzes sensor values and generates intelligent aler
 - Longitude
 - Altitude
 - Speed
-- Satellite Count
+- Satellite count
 
----
+## Multi-Platform Visualization
 
-# Multi-Platform Visualization
+- Responsive web dashboard
+- Digital Twin interface
+- Bluetooth mobile application
+- LCD dashboard
+- MQTT cloud dashboard
 
-✔ Responsive Web Dashboard
+## Project Workflow
 
-✔ AI Digital Twin
+1. Vehicle inputs are acquired or generated by the ESP32 vehicle simulator.
+2. Telemetry is transmitted over the CAN bus.
+3. The processing ESP32 evaluates the data and calculates health indicators.
+4. Results are displayed through the LCD, web dashboard, and Digital Twin, and published through MQTT.
+5. The mobile gateway forwards telemetry through the HC-05 Bluetooth module to the mobile application.
 
-✔ Bluetooth Mobile Application
+## Applications
 
-✔ LCD Dashboard
-
-✔ MQTT Cloud Dashboard
-
----
-
-# Project Workflow
-
-```
-Vehicle Inputs
-      │
-      ▼
-ESP32 Vehicle Simulator
-      │
-      ▼
-CAN Bus Communication
-      │
-      ▼
-AI Processing ESP32
-      │
-      ├────────► LCD Display
-      ├────────► Web Dashboard
-      ├────────► Digital Twin
-      ├────────► MQTT Cloud
-      └────────► Bluetooth Node
-                     │
-                     ▼
-                 Mobile App
-```
-
----
-
-
-# Applications
-
-- Smart Vehicles
-- Connected Cars
-- Fleet Management
-- Automotive Research
-- Educational Projects
-- Vehicle Health Monitoring
-- Industrial Telematics
+- Smart vehicle prototypes
+- Connected-car demonstrations
+- Fleet-management research
+- Automotive research
+- Educational projects
+- Vehicle health monitoring
+- Industrial telematics
 - Automotive IoT
 
----
+## Reported Performance
 
-# Performance
+The following figures are supplied project specifications and reported performance values.
 
-| Feature | Performance |
-|----------|-------------|
-| Vehicle Parameters | 50+ |
-| CAN IDs | 22 |
-| CAN Packet Loss | <0.1% |
-| Web Response | <500 ms |
-| AI Prediction Accuracy | >95% |
+| Metric | Reported value |
+| --- | ---: |
+| Vehicle parameters | 50+ |
+| CAN message IDs | 22 |
+| CAN packet loss | <0.1% |
+| Web response time | <500 ms |
+| Health prediction accuracy | >95% |
 
----
-##  Demonstration Video
-https://youtu.be/OBOi5btmlYw
----
-# Author
+## 🎥 Demonstration Video
 
-**Eshwar Prasad Y**
+[▶ Watch the VehicleGuard Pro demonstration on YouTube](https://youtu.be/OBOi5btmlYw)
 
+## Author
+
+**Eshwar Prasad Y**  
 Electronics & Communication Engineering
 
 Embedded Systems | IoT | AI | Automotive Electronics | Digital Twin
 
-Email: eshwargowda313@gmail.com
+- **Email:** [eshwargowda313@gmail.com](mailto:eshwargowda313@gmail.com)
+- **LinkedIn:** [Eshwar Prasad Y](https://www.linkedin.com/in/eshwar-prasad-y-a3043b370/)
 
-LinkedIn: linkedin.com/in/eshwar-prasad-y-a3043b370
+## Acknowledgements
 
----
-
-# Acknowledgements
-
-Special thanks to
+Special thanks to:
 
 - Arduino Community
 - ESP32 Community
@@ -291,3 +226,5 @@ Special thanks to
 - Open Source Community
 
 ---
+
+**VehicleGuard Pro · ESP32 · CAN Bus · Vehicle Health Analytics · Digital Twin**
